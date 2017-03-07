@@ -1,0 +1,2954 @@
+diff --git a/doc/source/project_pipeline.rst b/doc/source/project_pipeline.rst
+new file mode 100644
+index 0000000..67b0bbc
+--- /dev/null
++++ b/doc/source/project_pipeline.rst
+@@ -0,0 +1,7 @@
++.. _project_pipeline:
++
++Pipeline Project
++================
++
++.. automodule:: project_pipeline
++   :members:
+diff --git a/jenkins_jobs/errors.py b/jenkins_jobs/errors.py
+index 6a837dd..5ffbf28 100644
+--- a/jenkins_jobs/errors.py
++++ b/jenkins_jobs/errors.py
+@@ -25,8 +25,8 @@ class ModuleError(JenkinsJobsException):
+                 data = frame.f_locals
+                 module_name = "%s.%s" % (data['component_type'], data['name'])
+                 break
+-            # XML generation done directly by class using gen_xml
+-            if co_name == 'gen_xml':
++            # XML generation done directly by class using gen_xml or root_xml
++            if co_name == 'gen_xml' or co_name == 'root_xml':
+                 data = frame.f_locals['data']
+                 module_name = next(iter(data.keys()))
+                 break
+diff --git a/jenkins_jobs/modules/builders.py b/jenkins_jobs/modules/builders.py
+index d064966..dc9a90d 100644
+--- a/jenkins_jobs/modules/builders.py
++++ b/jenkins_jobs/modules/builders.py
+@@ -43,6 +43,7 @@ from jenkins_jobs.errors import InvalidAttributeError
+ from jenkins_jobs.errors import JenkinsJobsException
+ from jenkins_jobs.errors import MissingAttributeError
+ import jenkins_jobs.modules.base
++import jenkins_jobs.modules.helpers as helpers
+ from jenkins_jobs.modules.helpers import append_git_revision_config
+ import pkg_resources
+ from jenkins_jobs.modules.helpers import cloudformation_init
+@@ -2158,6 +2159,159 @@ def publish_over_ssh(registry, xml_parent, data):
+     ssh(registry, xml_parent, data)
+ 
+ 
++def saltstack(parser, xml_parent, data):
++    """yaml: saltstack
++
++    Send a message to Salt API. Requires the :jenkins-wiki:`saltstack plugin
++    <saltstack-plugin>`.
++
++    :arg str servername: Salt master server name (required)
++    :arg str authtype: Authentication type ('pam' or 'ldap', default 'pam')
++    :arg str credentials: Credentials ID for which to authenticate to Salt
++        master (required)
++    :arg str target: Target minions (default '')
++    :arg str targettype: Target type ('glob', 'pcre', 'list', 'grain',
++        'pillar', 'nodegroup', 'range', or 'compound', default 'glob')
++    :arg str function: Function to execute (default '')
++    :arg str arguments: Salt function arguments (default '')
++    :arg str kwarguments: Salt keyword arguments (default '')
++    :arg bool saveoutput: Save Salt return data into environment variable
++        (default false)
++    :arg str clientinterface: Client interface type ('local', 'local-batch',
++        or 'runner', default 'local')
++    :arg bool wait: Wait for completion of command (default false)
++    :arg str polltime: Number of seconds to wait before polling job completion
++        status (default '')
++    :arg str batchsize: Salt batch size, absolute value or %-age (default 100%)
++    :arg str mods: Mods to runner (default '')
++    :arg bool setpillardata: Set Pillar data (default false)
++    :arg str pillarkey: Pillar key (default '')
++    :arg str pillarvalue: Pillar value (default '')
++
++    Minimal Example:
++
++    .. literalinclude:: ../../tests/builders/fixtures/saltstack-minimal.yaml
++       :language: yaml
++
++    Full Example:
++
++    .. literalinclude:: ../../tests/builders/fixtures/saltstack-full.yaml
++       :language: yaml
++    """
++    saltstack = XML.SubElement(xml_parent, 'com.waytta.SaltAPIBuilder')
++
++    supported_auth_types = ['pam', 'ldap']
++    supported_target_types = ['glob', 'pcre', 'list', 'grain', 'pillar',
++                              'nodegroup', 'range', 'compound']
++    supported_client_interfaces = ['local', 'local-batch', 'runner']
++
++    mapping = [
++        ('servername', 'servername', None),
++        ('credentials', 'credentialsId', None),
++        ('authtype', 'authtype', 'pam', supported_auth_types),
++        ('target', 'target', ''),
++        ('targettype', 'targettype', 'glob', supported_target_types),
++        ('clientinterface', 'clientInterface', 'local',
++            supported_client_interfaces),
++        ('function', 'function', ''),
++        ('arguments', 'arguments', ''),
++        ('kwarguments', 'kwarguments', ''),
++        ('setpillardata', 'usePillar', False),
++        ('pillarkey', 'pillarkey', ''),
++        ('pillarvalue', 'pillarvalue', ''),
++        ('wait', 'blockbuild', False),
++        ('polltime', 'jobPollTime', ''),
++        ('batchsize', 'batchSize', '100%'),
++        ('mods', 'mods', ''),
++        ('saveoutput', 'saveEnvVar', False)
++    ]
++
++    helpers.convert_mapping_to_xml(saltstack, data, mapping,
++                                   fail_required=True)
++
++    clientInterface = data.get('clientinterface', 'local')
++    blockbuild = str(data.get('wait', False)).lower()
++    jobPollTime = str(data.get('polltime', ''))
++    batchSize = data.get('batchsize', '100%')
++    mods = data.get('mods', '')
++    usePillar = str(data.get('setpillardata', False)).lower()
++
++    # Build the clientInterfaces structure, based on the
++    # clientinterface setting
++    clientInterfaces = XML.SubElement(saltstack, 'clientInterfaces')
++    XML.SubElement(clientInterfaces, 'nullObject').text = 'false'
++
++    ci_attrib = {
++        'class': 'org.apache.commons.collections.map.ListOrderedMap',
++        'serialization': 'custom'
++    }
++    properties = XML.SubElement(clientInterfaces, 'properties', ci_attrib)
++
++    lomElement = 'org.apache.commons.collections.map.ListOrderedMap'
++    listOrderedMap = XML.SubElement(properties, lomElement)
++
++    default = XML.SubElement(listOrderedMap, 'default')
++    ordered_map = XML.SubElement(listOrderedMap, 'map')
++
++    insertOrder = XML.SubElement(default, 'insertOrder')
++
++    ci_config = []
++    if clientInterface == 'local':
++        ci_config = [
++            ('blockbuild', blockbuild),
++            ('jobPollTime', jobPollTime),
++            ('clientInterface', clientInterface)
++        ]
++
++    elif clientInterface == 'local-batch':
++        ci_config = [
++            ('batchSize', batchSize),
++            ('clientInterface', clientInterface)
++        ]
++
++    elif clientInterface == 'runner':
++        ci_config = [
++            ('mods', mods),
++            ('clientInterface', clientInterface)
++        ]
++
++        if usePillar == 'true':
++            ci_config.append(('usePillar', usePillar))
++
++            pillar_cfg = [
++                ('pillarkey', data.get('pillarkey')),
++                ('pillarvalue', data.get('pillarvalue'))
++            ]
++
++    for emt, value in ci_config:
++        XML.SubElement(insertOrder, 'string').text = emt
++        entry = XML.SubElement(ordered_map, 'entry')
++        XML.SubElement(entry, 'string').text = emt
++
++        # Special handling when usePillar == true, requires additional
++        # structure in the builder XML
++        if emt != 'usePillar':
++            XML.SubElement(entry, 'string').text = value
++        else:
++            jsonobj = XML.SubElement(entry, 'net.sf.json.JSONObject')
++            XML.SubElement(jsonobj, 'nullObject').text = 'false'
++
++            pillarProps = XML.SubElement(jsonobj, 'properties', ci_attrib)
++            XML.SubElement(pillarProps, 'unserializable-parents')
++
++            pillarLom = XML.SubElement(pillarProps, lomElement)
++
++            pillarDefault = XML.SubElement(pillarLom, 'default')
++            pillarMap = XML.SubElement(pillarLom, 'map')
++            pillarInsertOrder = XML.SubElement(pillarDefault, 'insertOrder')
++
++            for pemt, value in pillar_cfg:
++                XML.SubElement(pillarInsertOrder, 'string').text = pemt
++                pillarEntry = XML.SubElement(pillarMap, 'entry')
++                XML.SubElement(pillarEntry, 'string').text = pemt
++                XML.SubElement(pillarEntry, 'string').text = value
++
++
+ class Builders(jenkins_jobs.modules.base.Base):
+     sequence = 60
+ 
+diff --git a/jenkins_jobs/modules/general.py b/jenkins_jobs/modules/general.py
+index c4e67de..658d3c1 100644
+--- a/jenkins_jobs/modules/general.py
++++ b/jenkins_jobs/modules/general.py
+@@ -22,7 +22,7 @@ Example:
+ :Job Parameters:
+     * **project-type**:
+       Defaults to "freestyle", but "maven" as well as "multijob", "flow",
+-      "workflow" or "externaljob" can also be specified.
++      "pipeline" or "externaljob" can also be specified.
+ 
+     * **defaults**:
+       Specifies a set of :ref:`defaults` to use for this job, defaults to
+diff --git a/jenkins_jobs/modules/project_pipeline.py b/jenkins_jobs/modules/project_pipeline.py
+new file mode 100644
+index 0000000..ebf27fb
+--- /dev/null
++++ b/jenkins_jobs/modules/project_pipeline.py
+@@ -0,0 +1,104 @@
++# -*- coding: utf-8 -*-
++# Copyright (C) 2016 Mirantis, Inc.
++#
++# Based on jenkins_jobs/modules/project_workflow.py by
++# Copyright (C) 2015 David Caro <david@dcaro.es>
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++# License for the specific language governing permissions and limitations
++# under the License.
++
++
++"""
++The Pipeline Project module handles creating Jenkins Pipeline projects
++(formerly known as the Workflow projects).
++You may specify ``pipeline`` in the ``project-type`` attribute of
++the :ref:`Job` definition.
++
++Requires the Jenkins :jenkins-wiki:`Pipeline Plugin <Pipeline+Plugin>`:
++
++In order to write an inline script within a job-template you have to escape the
++curly braces by doubling them in the DSL: { -> {{ , otherwise it will be
++interpreted by the python str.format() command.
++
++:Job Parameters:
++    * **sandbox** (`bool`): If the script should run in a sandbox (default
++      false)
++    * **dsl** (`str`): The DSL content or,
++    * **pipeline-scm** (`str`): in case "Pipeline as code" feature is used.
++      Then you should specify:
++
++        * **scm**: single ``scm`` component (or a reference) describing the
++          source code repository
++        * **script-path**: path to the Groovy file containing the job's steps
++          (optional, default: ``Jenkinsfile``)
++
++Note that ``dsl`` and ``pipeline-scm`` parameters are mutually exclusive.
++
++Inline DSL job example:
++
++    .. literalinclude::
++      /../../tests/yamlparser/fixtures/project_pipeline_template001.yaml
++
++Inline DSL job template example:
++
++    .. literalinclude::
++      /../../tests/yamlparser/fixtures/project_pipeline_template002.yaml
++
++"Pipeline as code" example:
++
++    .. literalinclude::
++      /../../tests/yamlparser/fixtures/project_pipeline_template004.yaml
++
++"Pipeline as code" example using templates:
++
++    .. literalinclude::
++      /../../tests/yamlparser/fixtures/project_pipeline_template005.yaml
++
++.. _Pipeline as code: https://jenkins.io/solutions/pipeline/
++
++"""
++import xml.etree.ElementTree as XML
++
++from jenkins_jobs.errors import JenkinsJobsException
++import jenkins_jobs.modules.base
++
++
++class Pipeline(jenkins_jobs.modules.base.Base):
++    sequence = 0
++    error_msg = ("You cannot declare both 'dsl' and 'pipeline-scm' on a "
++                 "pipeline job")
++
++    def root_xml(self, data):
++        xml_parent = XML.Element('flow-definition',
++                                 {'plugin': 'workflow-job'})
++        if 'dsl' in data and 'pipeline-scm' in data:
++            raise JenkinsJobsException(self.error_msg)
++        if 'dsl' in data:
++            xml_definition = XML.SubElement(xml_parent, 'definition',
++                                            {'plugin': 'workflow-cps',
++                                             'class': 'org.jenkinsci.plugins.'
++                                             'workflow.cps.CpsFlowDefinition'})
++            XML.SubElement(xml_definition, 'script').text = data['dsl']
++        elif 'pipeline-scm' in data:
++            xml_definition = XML.SubElement(xml_parent, 'definition', {
++                'plugin': 'workflow-cps',
++                'class': 'org.jenkinsci.plugins.workflow.cps.'
++                'CpsScmFlowDefinition'})
++        else:
++            raise JenkinsJobsException("Either 'dsl' or 'pipeline-scm' "
++                                       "is required for pipeline job")
++
++        needs_workspace = data.get('sandbox', False)
++        XML.SubElement(xml_definition, 'sandbox').text = str(
++            needs_workspace).lower()
++
++        return xml_parent
+diff --git a/jenkins_jobs/modules/project_workflow.py b/jenkins_jobs/modules/project_workflow.py
+index ac4bb00..d0a99fa 100644
+--- a/jenkins_jobs/modules/project_workflow.py
++++ b/jenkins_jobs/modules/project_workflow.py
+@@ -18,6 +18,8 @@
+ 
+ 
+ """
++Deprecated: please use :ref:`project_pipeline` instead.
++
+ The workflow Project module handles creating Jenkins workflow projects.
+ You may specify ``workflow`` in the ``project-type`` attribute of
+ the :ref:`Job` definition.
+@@ -45,6 +47,7 @@ Job template example:
+       /../../tests/yamlparser/fixtures/project_workflow_template002.yaml
+ 
+ """
++import logging
+ import xml.etree.ElementTree as XML
+ 
+ from jenkins_jobs.errors import MissingAttributeError
+@@ -55,6 +58,11 @@ class Workflow(jenkins_jobs.modules.base.Base):
+     sequence = 0
+ 
+     def root_xml(self, data):
++        logger = logging.getLogger(__name__)
++        logger.warning(
++            "Workflow job type is deprecated, please use Pipeline job type"
++        )
++
+         xml_parent = XML.Element('flow-definition',
+                                  {'plugin': 'workflow-job'})
+         xml_definition = XML.SubElement(xml_parent, 'definition',
+@@ -64,7 +72,7 @@ class Workflow(jenkins_jobs.modules.base.Base):
+         try:
+             XML.SubElement(xml_definition, 'script').text = data['dsl']
+         except KeyError as e:
+-            raise MissingAttributeError(e.arg[0])
++            raise MissingAttributeError(e.args[0])
+ 
+         needs_workspace = data.get('sandbox', False)
+         XML.SubElement(xml_definition, 'sandbox').text = str(
+diff --git a/jenkins_jobs/modules/publishers.py b/jenkins_jobs/modules/publishers.py
+index fef4ec2..18e7e04 100644
+--- a/jenkins_jobs/modules/publishers.py
++++ b/jenkins_jobs/modules/publishers.py
+@@ -55,6 +55,8 @@ def archive(registry, xml_parent, data):
+     :arg bool fingerprint: fingerprint all archived artifacts (default false)
+     :arg bool default-excludes: This option allows to enable or disable the
+         default Ant exclusions. (default true)
++    :arg bool case-sensitive: Treat include and exclude patterns as case
++        sensitive. (default true)
+ 
+     Example:
+ 
+@@ -96,6 +98,10 @@ def archive(registry, xml_parent, data):
+     default_excludes = XML.SubElement(archiver, 'defaultExcludes')
+     default_excludes.text = str(data.get('default-excludes', True)).lower()
+ 
++    if 'case-sensitive' in data:
++        case_sensitive = XML.SubElement(archiver, 'caseSensitive')
++        case_sensitive.text = str(data.get('case-sensitive', True)).lower()
++
+ 
+ def blame_upstream(registry, xml_parent, data):
+     """yaml: blame-upstream
+@@ -294,6 +300,52 @@ def campfire(registry, xml_parent, data):
+         XML.SubElement(room, 'campfire reference="../../campfire"')
+ 
+ 
++def mqtt(registry, xml_parent, data):
++    """yaml: mqtt
++    This plugin lets you send build notifications to a MQTT message queue.
++    Requires the :jenkins-wiki:`MQTT Notification Plugin
++    <MQTT+Notification+Plugin>`.
++
++    :arg str broker-url: the broker URL, as protocol://address:port (required)
++    :arg str credentials-id: credentials to use to connect to the broker
++    (optional)
++    :arg str topic: the message topic (default "jenkins/$PROJECT_URL")
++    :arg str message: the message itself (default "$BUILD_RESULT")
++    :arg str qos: one of AT_MOST_ONCE, AT_LEAST_ONCE, or EXACTLY_ONCE
++    (default AT_MOST_ONCE)
++    :arg bool retain-message: whether to resend message or not when a new
++    client connects (default false)
++
++    Minimal Example:
++
++    .. literalinclude:: /../../tests/publishers/fixtures/mqtt-minimal.yaml
++       :language: yaml
++
++    Full Example:
++
++    .. literalinclude:: /../../tests/publishers/fixtures/mqtt-full.yaml
++       :language: yaml
++    """
++
++    mqtt = XML.SubElement(xml_parent,
++                          'jenkins.plugins.mqttnotification.MqttNotifier')
++    mqtt.set('plugin', 'mqtt-notification-plugin')
++    mqtt_mapping = [
++        ('broker-url', 'brokerUrl', None), ]
++    helpers.convert_mapping_to_xml(mqtt, data, mqtt_mapping,
++                                   fail_required=True)
++    mqtt_mapping = [
++        ('credentials-id', 'credentialsId', None),
++        ('topic', 'topic', 'jenkins/$PROJECT_URL'),
++        ('message', 'message', '$BUILD_RESULT'),
++        ('qos', 'qos', 'AT_MOST_ONCE', {'AT_MOST_ONCE': '0',
++                                        'AT_LEAST_ONCE': '1',
++                                        'EXACTLY_ONCE': '2'}),
++        ('retain-message', 'retainMessage', False)
++    ]
++    helpers.convert_mapping_to_xml(mqtt, data, mqtt_mapping)
++
++
+ def codecover(registry, xml_parent, data):
+     """yaml: codecover
+     This plugin allows you to capture code coverage report from CodeCover.
+@@ -1140,6 +1192,10 @@ def junit(registry, xml_parent, data):
+     :arg bool flaky-test-reports: Publish flaky test reports (default false).
+         Requires the Jenkins :jenkins-wiki:`Flaky Test Handler Plugin
+         <Flaky+Test+Handler+Plugin>`.
++    :arg bool junit-attachments: Publish test attachments (default false).
++        Requires the Jenkins :jenkins-wiki:`JUnit Attachments Plugin
++        <JUnit+Attachments+Plugin>`.
++
+ 
+     Minimal example using defaults:
+ 
+@@ -1178,6 +1234,9 @@ def junit(registry, xml_parent, data):
+         XML.SubElement(datapublisher,
+                        'com.google.jenkins.flakyTestHandler.plugin'
+                        '.JUnitFlakyTestDataPublisher')
++    if str(data.get('junit-attachments', False)).lower() == 'true':
++        XML.SubElement(datapublisher,
++                       'hudson.plugins.junitattachments.AttachmentPublisher')
+ 
+ 
+ def cucumber_reports(registry, xml_parent, data):
+@@ -1926,6 +1985,8 @@ def base_email_ext(registry, xml_parent, data, ttype):
+         XML.SubElement(email, 'sendToDevelopers').text = 'false'
+         XML.SubElement(email, 'includeCulprits').text = 'false'
+         XML.SubElement(email, 'sendToRecipientList').text = 'true'
++    if ttype == 'ScriptTrigger':
++        XML.SubElement(trigger, 'triggerScript').text = data['trigger-script']
+ 
+ 
+ def email_ext(registry, xml_parent, data):
+@@ -1977,6 +2038,8 @@ def email_ext(registry, xml_parent, data):
+     :arg bool still-unstable: Send an email if the build is still unstable
+         (default false)
+     :arg bool pre-build: Send an email before the build (default false)
++    :arg str trigger-script: A Groovy script used to determine if an email
++        should be sent.
+     :arg str presend-script: A Groovy script executed prior sending the mail.
+         (default '')
+     :arg str postsend-script: A Goovy script executed after sending the email.
+@@ -2037,6 +2100,8 @@ def email_ext(registry, xml_parent, data):
+         base_email_ext(registry, ctrigger, data, 'StillUnstableTrigger')
+     if data.get('pre-build', False):
+         base_email_ext(registry, ctrigger, data, 'PreBuildTrigger')
++    if data.get('trigger-script', False):
++        base_email_ext(registry, ctrigger, data, 'ScriptTrigger')
+ 
+     content_type_mime = {
+         'text': 'text/plain',
+@@ -2926,10 +2991,16 @@ def workspace_cleanup(registry, xml_parent, data):
+     :arg str external-deletion-command: external deletion command to run
+         against files and directories
+ 
+-    Example:
++    Minimal Example:
+ 
+     .. literalinclude::
+-        /../../tests/publishers/fixtures/workspace-cleanup001.yaml
++        /../../tests/publishers/fixtures/workspace-cleanup-minimal.yaml
++       :language: yaml
++
++    Full Example:
++
++    .. literalinclude::
++        /../../tests/publishers/fixtures/workspace-cleanup-complete.yaml
+        :language: yaml
+     """
+ 
+@@ -2949,12 +3020,12 @@ def workspace_cleanup(registry, xml_parent, data):
+         XML.SubElement(ptrn, 'pattern').text = exc
+         XML.SubElement(ptrn, 'type').text = "EXCLUDE"
+ 
+-    XML.SubElement(p, 'deleteDirs').text = \
+-        str(data.get("dirmatch", False)).lower()
+-    XML.SubElement(p, 'cleanupMatrixParent').text = \
+-        str(data.get("clean-parent", False)).lower()
+-    XML.SubElement(p, 'externalDelete').text = \
+-        str(data.get('external-deletion-command', ''))
++    mappings = [
++        ('dirmatch', 'deleteDirs', False),
++        ('clean-parent', 'cleanupMatrixParent', False),
++        ('external-deletion-command', 'externalDelete', '')
++    ]
++    helpers.convert_mapping_to_xml(p, data, mappings, fail_required=True)
+ 
+     mask = [('success', 'cleanWhenSuccess'),
+             ('unstable', 'cleanWhenUnstable'),
+@@ -3349,38 +3420,45 @@ def rich_text_publisher(registry, xml_parent, data):
+     Requires the Jenkins :jenkins-wiki:`Rich Text Publisher Plugin
+     <Rich+Text+Publisher+Plugin>`.
+ 
+-    :arg str stable-text: The stable text
++    :arg str stable-text: The stable text (required)
+     :arg str unstable-text: The unstable text if different from stable
+-      (default '')
++        (default '')
++    :arg bool unstable-as-stable: The same text block is used for stable and
++         unstable builds (default true)
+     :arg str failed-text: The failed text if different from stable (default '')
+-    :arg str parser-name: HTML, Confluence or WikiText
++    :arg bool failed-as-stable: The same text block is used for stable and
++         failed builds (default true)
++    :arg str parser-name: HTML, Confluence or WikiText (default 'WikiText')
+ 
+ 
+-    Example:
++    Minimal Example:
+ 
+-    .. literalinclude::  /../../tests/publishers/fixtures/richtext001.yaml
++    .. literalinclude::  /../../tests/publishers/fixtures/richtext-minimal.yaml
+        :language: yaml
+ 
++    Full Example:
++
++    .. literalinclude::
++       /../../tests/publishers/fixtures/richtext-complete.yaml
++       :language: yaml
+     """
+ 
+     parsers = ['HTML', 'Confluence', 'WikiText']
+-    parser_name = data['parser-name']
+-    if parser_name not in parsers:
+-        raise JenkinsJobsException('parser-name must be one of: %s' %
+-                                   ", ".join(parsers))
+-
+     reporter = XML.SubElement(
+         xml_parent,
+         'org.korosoft.jenkins.plugin.rtp.RichTextPublisher')
+-    XML.SubElement(reporter, 'stableText').text = data['stable-text']
+-    XML.SubElement(reporter, 'unstableText').text =\
+-        data.get('unstable-text', '')
+-    XML.SubElement(reporter, 'failedText').text = data.get('failed-text', '')
+-    XML.SubElement(reporter, 'unstableAsStable').text =\
+-        'False' if data.get('unstable-text', '') else 'True'
+-    XML.SubElement(reporter, 'failedAsStable').text =\
+-        'False' if data.get('failed-text', '') else 'True'
+-    XML.SubElement(reporter, 'parserName').text = parser_name
++    reporter.set('plugin', 'rich-text-publisher-plugin')
++
++    mappings = [
++        ('stable-text', 'stableText', None),
++        ('unstable-text', 'unstableText', ''),
++        ('failed-text', 'failedText', ''),
++        ('unstable-as-stable', 'unstableAsStable', True),
++        ('failed-as-stable', 'failedAsStable', True),
++        ('parser-name', 'parserName', 'WikiText', parsers)
++    ]
++    helpers.convert_mapping_to_xml(
++        reporter, data, mappings, fail_required=True)
+ 
+ 
+ def tap(registry, xml_parent, data):
+@@ -3666,7 +3744,7 @@ def robot(registry, xml_parent, data):
+     <Robot+Framework+Plugin>`.
+ 
+     :arg str output-path: Path to directory containing robot xml and html files
+-        relative to build workspace. (default '')
++        relative to build workspace. (required)
+     :arg str log-file-link: Name of log or report file to be linked on jobs
+         front page (default '')
+     :arg str report-html: Name of the html file containing robot test report
+@@ -3684,30 +3762,35 @@ def robot(registry, xml_parent, data):
+     :arg list other-files: list other files to archive (default '')
+     :arg bool archive-output-xml: Archive output xml file to server
+         (default true)
++    :arg bool enable-cache: Enable cache for test results (default true)
+ 
+-    Example:
++    Minimal Example:
+ 
+-    .. literalinclude:: /../../tests/publishers/fixtures/robot001.yaml
++    .. literalinclude:: /../../tests/publishers/fixtures/robot-minimal.yaml
++       :language: yaml
++
++    Full Example:
++
++    .. literalinclude:: /../../tests/publishers/fixtures/robot-complete.yaml
+        :language: yaml
+     """
+     parent = XML.SubElement(xml_parent, 'hudson.plugins.robot.RobotPublisher')
+-    XML.SubElement(parent, 'outputPath').text = data['output-path']
+-    XML.SubElement(parent, 'logFileLink').text = str(
+-        data.get('log-file-link', ''))
+-    XML.SubElement(parent, 'reportFileName').text = str(
+-        data.get('report-html', 'report.html'))
+-    XML.SubElement(parent, 'logFileName').text = str(
+-        data.get('log-html', 'log.html'))
+-    XML.SubElement(parent, 'outputFileName').text = str(
+-        data.get('output-xml', 'output.xml'))
+-    XML.SubElement(parent, 'passThreshold').text = str(
+-        data.get('pass-threshold', 0.0))
+-    XML.SubElement(parent, 'unstableThreshold').text = str(
+-        data.get('unstable-threshold', 0.0))
+-    XML.SubElement(parent, 'onlyCritical').text = str(
+-        data.get('only-critical', True)).lower()
++    parent.set('plugin', 'robot')
++    mappings = [
++        ('output-path', 'outputPath', None),
++        ('log-file-link', 'logFileLink', ''),
++        ('report-html', 'reportFileName', 'report.html'),
++        ('log-html', 'logFileName', 'log.html'),
++        ('output-xml', 'outputFileName', 'output.xml'),
++        ('pass-threshold', 'passThreshold', '0.0'),
++        ('unstable-threshold', 'unstableThreshold', '0.0'),
++        ('only-critical', 'onlyCritical', True),
++        ('enable-cache', 'enableCache', True)
++    ]
++    helpers.convert_mapping_to_xml(parent, data, mappings, fail_required=True)
++
+     other_files = XML.SubElement(parent, 'otherFiles')
+-    for other_file in data['other-files']:
++    for other_file in data.get('other-files', []):
+         XML.SubElement(other_files, 'string').text = str(other_file)
+     XML.SubElement(parent, 'disableArchiveOutput').text = str(
+         not data.get('archive-output-xml', True)).lower()
+@@ -3725,7 +3808,7 @@ def warnings(registry, xml_parent, data):
+ 
+         :workspace-file-scanners:
+             * **file-pattern** (`str`) -- Fileset 'includes' setting that
+-                specifies the files to scan for warnings
++                specifies the files to scan for warnings (required)
+             * **scanner** (`str`) -- The parser to use to scan the files
+                 provided in workspace-file-pattern (default '')
+     :arg str files-to-include: Comma separated list of regular
+@@ -3816,15 +3899,21 @@ def warnings(registry, xml_parent, data):
+     :arg str default-encoding: Default encoding when parsing or showing files
+         Leave empty to use default encoding of platform (default '')
+ 
+-    Example:
++    Minimal Example:
+ 
+-    .. literalinclude:: /../../tests/publishers/fixtures/warnings001.yaml
++    .. literalinclude:: /../../tests/publishers/fixtures/warnings-minimal.yaml
++       :language: yaml
++
++    Full Example:
++
++    .. literalinclude:: /../../tests/publishers/fixtures/warnings-complete.yaml
+        :language: yaml
+     """
+ 
+     warnings = XML.SubElement(xml_parent,
+                               'hudson.plugins.warnings.'
+                               'WarningsPublisher')
++    warnings.set('plugin', 'warnings')
+     console = XML.SubElement(warnings, 'consoleParsers')
+     for parser in data.get('console-log-parsers', []):
+         console_parser = XML.SubElement(console,
+@@ -3836,34 +3925,36 @@ def warnings(registry, xml_parent, data):
+         workspace_pattern = XML.SubElement(workspace,
+                                            'hudson.plugins.warnings.'
+                                            'ParserConfiguration')
+-        XML.SubElement(workspace_pattern, 'pattern').text = \
+-            wfs['file-pattern']
+-        XML.SubElement(workspace_pattern, 'parserName').text = \
+-            wfs['scanner']
+-    warnings_to_include = data.get('files-to-include', '')
+-    XML.SubElement(warnings, 'includePattern').text = warnings_to_include
+-    warnings_to_ignore = data.get('files-to-ignore', '')
+-    XML.SubElement(warnings, 'excludePattern').text = warnings_to_ignore
+-    run_always = str(data.get('run-always', False)).lower()
+-    XML.SubElement(warnings, 'canRunOnFailed').text = run_always
+-    detect_modules = str(data.get('detect-modules', False)).lower()
+-    XML.SubElement(warnings, 'shouldDetectModules').text = detect_modules
+-    # Note the logic reversal (included here to match the GUI)
+-    XML.SubElement(warnings, 'doNotResolveRelativePaths').text = \
+-        str(not data.get('resolve-relative-paths', False)).lower()
+-    health_threshold_high = str(data.get('health-threshold-high', ''))
+-    XML.SubElement(warnings, 'healthy').text = health_threshold_high
+-    health_threshold_low = str(data.get('health-threshold-low', ''))
+-    XML.SubElement(warnings, 'unHealthy').text = health_threshold_low
++        workspace_pattern_mappings = [
++            ('file-pattern', 'pattern', None),
++            ('scanner', 'parserName', '')
++        ]
++        helpers.convert_mapping_to_xml(workspace_pattern,
++                                       wfs,
++                                       workspace_pattern_mappings,
++                                       fail_required=True)
+     prioritiesDict = {'priority-high': 'high',
+                       'high-and-normal': 'normal',
+                       'all-priorities': 'low'}
+-    priority = data.get('health-priorities', 'all-priorities')
+-    if priority not in prioritiesDict:
+-        raise JenkinsJobsException("Health-Priority entered is not valid must "
+-                                   "be one of: %s" %
+-                                   ",".join(prioritiesDict.keys()))
+-    XML.SubElement(warnings, 'thresholdLimit').text = prioritiesDict[priority]
++    warnings_mappings = [
++        ('files-to-include', 'includePattern', ''),
++        ('files-to-ignore', 'excludePattern', ''),
++        ('plugin-name', 'pluginName', '[WARNINGS]'),
++        ('run-always', 'canRunOnFailed', False),
++        ('detect-modules', 'shouldDetectModules', False),
++        ('health-threshold-high', 'healthy', ''),
++        ('health-threshold-low', 'unHealthy', ''),
++        ('health-priorities',
++         'thresholdLimit',
++         'all-priorities',
++         prioritiesDict),
++        ('default-encoding', 'defaultEncoding', '')
++    ]
++    helpers.convert_mapping_to_xml(
++        warnings, data, warnings_mappings, fail_required=True)
++    # Note the logic reversal (included here to match the GUI)
++    XML.SubElement(warnings, 'doNotResolveRelativePaths').text = str(
++        not data.get('resolve-relative-paths', False)).lower()
+     td = XML.SubElement(warnings, 'thresholds')
+     for base in ["total", "new"]:
+         thresholds = data.get("%s-thresholds" % base, {})
+@@ -3887,10 +3978,9 @@ def warnings(registry, xml_parent, data):
+             use_stable_builds).lower()
+     else:
+         XML.SubElement(warnings, 'dontComputeNew').text = 'true'
+-        XML.SubElement(warnings, 'useStableBuildAsReference').text = 'false'
+         XML.SubElement(warnings, 'useDeltaValues').text = 'false'
+-    encoding = data.get('default-encoding', '')
+-    XML.SubElement(warnings, 'defaultEncoding').text = encoding
++        XML.SubElement(warnings, 'usePreviousBuildAsReference').text = 'false'
++        XML.SubElement(warnings, 'useStableBuildAsReference').text = 'false'
+ 
+ 
+ def sloccount(registry, xml_parent, data):
+@@ -3900,25 +3990,41 @@ def sloccount(registry, xml_parent, data):
+     Requires the Jenkins :jenkins-wiki:`SLOCCount Plugin <SLOCCount+Plugin>`.
+ 
+     :arg str report-files: Setting that specifies the generated raw
+-                           SLOCCount report files.
+-                           Be sure not to include any non-report files into
+-                           this pattern. The report files must have been
+-                           generated by sloccount using the
+-                           "--wide --details" options.
+-                           (default '\*\*/sloccount.sc')
++        SLOCCount report files. Be sure not to include any non-report files
++        into this pattern. The report files must have been generated by
++        sloccount using the "--wide --details" options.
++        (default '\*\*/sloccount.sc')
+     :arg str charset: The character encoding to be used to read the SLOCCount
+-                      result files. (default 'UTF-8')
++        result files. (default 'UTF-8')
++    :arg int builds-in-graph: Maximal number of last successful builds, that
++        are displayed in the trend graphs. (default 0)
++    :arg bool comment-is-code: This option is considered only in the cloc
++        report parser and is ignored in the SLOCCount one. (default false)
++    :arg bool ignore-build-failure: Try to process the report files even if
++        the build is not successful. (default false)
+ 
+-    Example:
++    Minimal Example:
+ 
+-    .. literalinclude:: /../../tests/publishers/fixtures/sloccount001.yaml
++    .. literalinclude:: /../../tests/publishers/fixtures/sloccount-minimal.yaml
++       :language: yaml
++
++    Full Example:
++
++    .. literalinclude::
++       /../../tests/publishers/fixtures/sloccount-complete.yaml
+        :language: yaml
+     """
+     top = XML.SubElement(xml_parent,
+                          'hudson.plugins.sloccount.SloccountPublisher')
+-    XML.SubElement(top, 'pattern').text = data.get('report-files',
+-                                                   '**/sloccount.sc')
+-    XML.SubElement(top, 'encoding').text = data.get('charset', 'UTF-8')
++    top.set('plugin', 'sloccount')
++    mappings = [
++        ('report-files', 'pattern', '**/sloccount.sc'),
++        ('charset', 'encoding', 'UTF-8'),
++        ('builds-in-graph', 'numBuildsInGraph', 0),
++        ('comment-is-code', 'commentIsCode', False),
++        ('ignore-build-failure', 'ignoreBuildFailure', False)
++    ]
++    helpers.convert_mapping_to_xml(top, data, mappings, fail_required=True)
+ 
+ 
+ def ircbot(registry, xml_parent, data):
+diff --git a/jenkins_jobs/modules/reporters.py b/jenkins_jobs/modules/reporters.py
+index 86ab179..db9f417 100644
+--- a/jenkins_jobs/modules/reporters.py
++++ b/jenkins_jobs/modules/reporters.py
+@@ -48,6 +48,8 @@ def email(registry, xml_parent, data):
+       unstable build (default true)
+     :arg bool send-to-individuals: Send an email to the individual
+       who broke the build (default false)
++    :arg bool notify-for-each-module: Send an email for each module
++      (e.g. failed, unstable). (default true)
+ 
+     Example::
+ 
+@@ -57,7 +59,7 @@ def email(registry, xml_parent, data):
+     """
+ 
+     mailer = XML.SubElement(xml_parent,
+-                            'hudson.maven.reporters.Mailer')
++                            'hudson.maven.reporters.MavenMailer')
+     XML.SubElement(mailer, 'recipients').text = data['recipients']
+ 
+     # Note the logic reversal (included here to match the GUI
+@@ -67,8 +69,8 @@ def email(registry, xml_parent, data):
+         XML.SubElement(mailer, 'dontNotifyEveryUnstableBuild').text = 'true'
+     XML.SubElement(mailer, 'sendToIndividuals').text = str(
+         data.get('send-to-individuals', False)).lower()
+-    # TODO: figure out what this is:
+-    XML.SubElement(mailer, 'perModuleEmail').text = 'true'
++    XML.SubElement(mailer, 'perModuleEmail').text = str(
++        data.get('notify-for-every-module', True)).lower()
+ 
+ 
+ def findbugs(registry, xml_parent, data):
+diff --git a/jenkins_jobs/modules/scm.py b/jenkins_jobs/modules/scm.py
+index 0a8b930..19e8e02 100644
+--- a/jenkins_jobs/modules/scm.py
++++ b/jenkins_jobs/modules/scm.py
+@@ -612,18 +612,18 @@ def repo(registry, xml_parent, data):
+     Requires the Jenkins :jenkins-wiki:`Repo Plugin <Repo+Plugin>`.
+ 
+     :arg str manifest-url: URL of the repo manifest (required)
+-    :arg str manifest-branch: The branch of the manifest to use (default '')
++    :arg str manifest-branch: The branch of the manifest to use (optional)
+     :arg str manifest-file: Initial manifest file to use when initialising
+-        (default '')
++        (optional)
+     :arg str manifest-group: Only retrieve those projects in the manifest
+-        tagged with the provided group name (default '')
++        tagged with the provided group name (optional)
+     :arg list(str) ignore-projects: a list of projects in which changes would
+-        not be considered to trigger a build when pooling (default '')
++        not be considered to trigger a build when pooling (optional)
+     :arg str destination-dir: Location relative to the workspace root to clone
+-        under (default '')
+-    :arg str repo-url: custom url to retrieve the repo application (default '')
++        under (optional)
++    :arg str repo-url: custom url to retrieve the repo application (optional)
+     :arg str mirror-dir: Path to mirror directory to reference when
+-        initialising (default '')
++        initialising (optional)
+     :arg int jobs: Number of projects to fetch simultaneously (default 0)
+     :arg int depth: Specify the depth in history to sync from the source. The
+         default is to sync all of the history. Use 1 to just sync the most
+@@ -643,7 +643,7 @@ def repo(registry, xml_parent, data):
+     :arg bool show-all-changes: When this is checked --first-parent is no
+         longer passed to git log when determining changesets (default false)
+     :arg str local-manifest: Contents of .repo/local_manifest.xml, written
+-        prior to calling sync (default '')
++        prior to calling sync (optional)
+ 
+     Example:
+ 
+@@ -656,12 +656,6 @@ def repo(registry, xml_parent, data):
+     mapping = [
+         # option, xml name, default value
+         ('manifest-url', 'manifestRepositoryUrl', None),
+-        ('manifest-branch', 'manifestBranch', ''),
+-        ('manifest-file', 'manifestFile', ''),
+-        ('manifest-group', 'manifestGroup', ''),
+-        ('destination-dir', 'destinationDir', ''),
+-        ('repo-url', 'repoUrl', ''),
+-        ('mirror-dir', 'mirrorDir', ''),
+         ('jobs', 'jobs', 0),
+         ('depth', 'depth', 0),
+         ('current-branch', 'currentBranch', True),
+@@ -671,10 +665,21 @@ def repo(registry, xml_parent, data):
+         ('no-tags', 'noTags', False),
+         ('trace', 'trace', False),
+         ('show-all-changes', 'showAllChanges', False),
+-        ('local-manifest', 'localManifest', ''),
+     ]
+     convert_mapping_to_xml(scm, data, mapping, fail_required=True)
+ 
++    optional_mapping = [
++        # option, xml name, default value
++        ('manifest-branch', 'manifestBranch', None),
++        ('manifest-file', 'manifestFile', None),
++        ('manifest-group', 'manifestGroup', None),
++        ('destination-dir', 'destinationDir', None),
++        ('repo-url', 'repoUrl', None),
++        ('mirror-dir', 'mirrorDir', None),
++        ('local-manifest', 'localManifest', None),
++    ]
++    convert_mapping_to_xml(scm, data, optional_mapping, fail_required=False)
++
+     # ignore-projects does not follow the same pattern of the other parameters,
+     # so process it here:
+     ip = XML.SubElement(scm, 'ignoreProjects', {'class': 'linked-hash-set'})
+@@ -949,7 +954,7 @@ def tfs(registry, xml_parent, data):
+         data.get('local-path', '.'))
+     XML.SubElement(tfs, 'workspaceName').text = str(
+         data.get('workspace', 'Hudson-${JOB_NAME}-${NODE_NAME}'))
+-    # TODO: In the future, with would be nice to have a place that can pull
++    # TODO: In the future, it would be nice to have a place that can pull
+     # passwords into JJB without having to commit them in plaintext. This
+     # could also integrate nicely with global configuration options.
+     XML.SubElement(tfs, 'userPassword')
+@@ -1256,6 +1261,109 @@ def url(registry, xml_parent, data):
+         data.get('clear-workspace', False)).lower()
+ 
+ 
++def dimensions(registry, xml_parent, data):
++    """yaml: dimensions
++
++    Specifies the Dimensions SCM repository for this job.
++    Requires Jenkins :jenkins-wiki:`Dimensions Plugin <Dimensions+Plugin>`.
++
++    :arg str project: Project name of format PRODUCT_ID:PROJECT_NAME (required)
++    :arg str permissions: Default Permissions for updated files
++        (default: DEFAULT)
++
++        :Permissions:
++            * **DEFAULT**
++            * **READONLY**
++            * **WRITABLE**
++    :arg str eol: End of line (default: DEFAULT)
++
++        :End of line:
++            * **DEFAULT**
++            * **UNIX**
++            * **WINDOWS**
++            * **UNCHANGED**
++    :arg list folders: Folders to monitor (default /)
++    :arg list exclude: Paths to exclude from monitor
++    :arg str username: Repository username for this job
++    :arg str password: Repository password for this job
++    :arg str server: Dimensions server for this job
++    :arg str database: Dimensions database for this job.
++        Format must be database@dsn
++    :arg bool update: Use update (default false)
++    :arg bool clear-workspace: Clear workspace prior to build (default false)
++    :arg bool force-build: Force build even if the repository SCM checkout
++        operation fails (default false)
++    :arg bool overwrite-modified: Overwrite files in worspace from
++        repository files (default false)
++    :arg bool expand-vars: Expand substitution variables (default false)
++    :arg bool no-metadata: Checkout files with no metadata (default false)
++    :arg bool maintain-timestamp: Maintain file timestamp from Dimensions
++        (default false)
++    :arg bool slave-checkout: Force slave based checkout (default false)
++    :arg str timezone: Server timezone
++    :arg str web-url: Dimensions Web URL
++
++    Examples:
++
++    .. literalinclude:: /../../tests/scm/fixtures/dimensions-minimal.yaml
++       :language: yaml
++    .. literalinclude:: /../../tests/scm/fixtures/dimensions-full.yaml
++       :language: yaml
++
++    """
++
++    scm = XML.SubElement(
++        xml_parent,
++        'scm', {'class': 'hudson.plugins.dimensionsscm.DimensionsSCM'})
++
++    # List to check against for valid permission
++    perm = ['DEFAULT', 'READONLY', 'WRITABLE']
++
++    # List to check against for valid end of line
++    eol = ['DEFAULT', 'UNIX', 'WINDOWS', 'UNCHANGED']
++
++    mapping = [
++        # option, xml name, default value (text), attributes (hard coded)
++        ('project', 'project', None),
++        ('permissions', 'permissions', 'DEFAULT', perm),
++        ('eol', 'eol', 'DEFAULT', eol),
++        ('update', 'canJobUpdate', False),
++        ('clear-workspace', 'canJobDelete', False),
++        ('force-build', 'canJobForce', False),
++        ('overwrite-modified', 'canJobRevert', False),
++        ('expand-vars', 'canJobExpand', False),
++        ('no-metadata', 'canJobNoMetadata', False),
++        ('maintain-timestamp', 'canJobNoTouch', False),
++        ('slave-checkout', 'forceAsSlave', False),
++    ]
++    convert_mapping_to_xml(scm, data, mapping, fail_required=True)
++
++    # Folders to monitor. Default '/'
++    folders = XML.SubElement(scm, 'folders')
++    if 'folders' in data:
++        for folder in data['folders']:
++            XML.SubElement(folders, 'string').text = folder
++    else:
++        XML.SubElement(folders, 'string').text = '/'
++
++    # Excluded paths
++    exclude = XML.SubElement(scm, 'pathsToExclude')
++    if 'exclude' in data:
++        for exc in data['exclude']:
++            XML.SubElement(exclude, 'string').text = exc
++
++    optional_mapping = [
++        # option, xml name, default value (text), attributes (hard coded)
++        ('username', 'jobUserName', None),
++        ('password', 'jobPasswd', None),
++        ('server', 'jobServer', None),
++        ('database', 'jobDatabase', None),
++        ('timezone', 'jobTimeZone', None),
++        ('web-url', 'jobWebUrl', None),
++    ]
++    convert_mapping_to_xml(scm, data, optional_mapping, fail_required=False)
++
++
+ class SCM(jenkins_jobs.modules.base.Base):
+     sequence = 30
+ 
+@@ -1284,3 +1392,27 @@ class SCM(jenkins_jobs.modules.base.Base):
+                     pass
+ 
+             xml_parent.append(scms_parent)
++
++
++class PipelineSCM(jenkins_jobs.modules.base.Base):
++    sequence = 30
++
++    component_type = 'pipeline-scm'
++    component_list_type = 'pipeline-scm'
++
++    def gen_xml(self, xml_parent, data):
++        definition_parent = xml_parent.find('definition')
++        pipeline_dict = data.get(self.component_type, {})
++        scms = pipeline_dict.get('scm')
++        if scms:
++            scms_count = len(scms)
++            if scms_count == 0:
++                raise JenkinsJobsException("'scm' missing or empty")
++            elif scms_count == 1:
++                self.registry.dispatch('scm', definition_parent, scms[0])
++                XML.SubElement(definition_parent, 'scriptPath'
++                               ).text = pipeline_dict.get('script-path',
++                                                          'Jenkinsfile')
++            else:
++                raise JenkinsJobsException('Only one SCM can be specified '
++                                           'as pipeline-scm')
+diff --git a/jenkins_jobs/modules/triggers.py b/jenkins_jobs/modules/triggers.py
+index 8616775..1885566 100644
+--- a/jenkins_jobs/modules/triggers.py
++++ b/jenkins_jobs/modules/triggers.py
+@@ -1706,7 +1706,7 @@ def rabbitmq(registry, xml_parent, data):
+         XML.SubElement(rabbitmq, 'remoteBuildToken').text = str(
+             data.get('token'))
+     except KeyError as e:
+-        raise MissingAttributeError(e.arg[0])
++        raise MissingAttributeError(e.args[0])
+ 
+ 
+ def parameterized_timer(parser, xml_parent, data):
+diff --git a/requirements.txt b/requirements.txt
+index e5ffa4b..4f19904 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,5 +1,8 @@
+-six>=1.5.2
+-PyYAML
++# The order of packages is significant, because pip processes them in the order
++# of appearance. Changing the order has an impact on the overall integration
++# process, which may cause wedges in the gate later.
++six>=1.9.0 # MIT
++PyYAML>=3.10.0 # MIT
++pbr>=1.8 # Apache-2.0
++stevedore>=1.17.1 # Apache-2.0
+ python-jenkins>=0.4.8
+-pbr>=1.0.0,<2.0
+-stevedore>=1.8.0
+diff --git a/setup.cfg b/setup.cfg
+index fc240ab..f3e3778 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -23,7 +23,7 @@ classifier =
+     Programming Language :: Python :: 2
+     Programming Language :: Python :: 2.7
+     Programming Language :: Python :: 3
+-    Programming Language :: Python :: 3.3
++    Programming Language :: Python :: 3.4
+ 
+ [files]
+ packages =
+@@ -47,6 +47,7 @@ jenkins_jobs.projects =
+     matrix=jenkins_jobs.modules.project_matrix:Matrix
+     maven=jenkins_jobs.modules.project_maven:Maven
+     multijob=jenkins_jobs.modules.project_multijob:MultiJob
++    pipeline=jenkins_jobs.modules.project_pipeline:Pipeline
+     workflow=jenkins_jobs.modules.project_workflow:Workflow
+ jenkins_jobs.views =
+     list=jenkins_jobs.modules.view_list:List
+@@ -76,6 +77,7 @@ jenkins_jobs.modules =
+     metadata=jenkins_jobs.modules.metadata:Metadata
+     notifications=jenkins_jobs.modules.notifications:Notifications
+     parameters=jenkins_jobs.modules.parameters:Parameters
++    pipeline-scm=jenkins_jobs.modules.scm:PipelineSCM
+     properties=jenkins_jobs.modules.properties:Properties
+     publishers=jenkins_jobs.modules.publishers:Publishers
+     reporters=jenkins_jobs.modules.reporters:Reporters
+diff --git a/setup.py b/setup.py
+index a5af70f..782bb21 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1,19 +1,29 @@
+-# Copyright 2012 Hewlett-Packard Development Company, L.P.
++# Copyright (c) 2013 Hewlett-Packard Development Company, L.P.
+ #
+-# Licensed under the Apache License, Version 2.0 (the "License"); you may
+-# not use this file except in compliance with the License. You may obtain
+-# a copy of the License at
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
+ #
+-#      http://www.apache.org/licenses/LICENSE-2.0
++#    http://www.apache.org/licenses/LICENSE-2.0
+ #
+ # Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+-# License for the specific language governing permissions and limitations
+-# under the License.
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++# implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
+ 
++# THIS FILE IS MANAGED BY THE GLOBAL REQUIREMENTS REPO - DO NOT EDIT
+ import setuptools
+ 
++# In python < 2.7.4, a lazy loading of package `pbr` will break
++# setuptools if some other modules registered functions in `atexit`.
++# solution from: http://bugs.python.org/issue15881#msg170215
++try:
++    import multiprocessing  # noqa
++except ImportError:
++    pass
++
+ setuptools.setup(
+-    setup_requires=['pbr'],
++    setup_requires=['pbr>=1.8'],
+     pbr=True)
+diff --git a/test-requirements.txt b/test-requirements.txt
+index 50e4b30..af77160 100644
+--- a/test-requirements.txt
++++ b/test-requirements.txt
+@@ -1,11 +1,14 @@
+-hacking>=0.5.6,<=10.1
+-coverage>=3.6
+-fixtures
+-python-subunit
+-sphinx>=1.3.1
+-setuptools_git>=0.4
+-testscenarios
+-testtools
+-testrepository
++# The order of packages is significant, because pip processes them in the order
++# of appearance. Changing the order has an impact on the overall integration
++# process, which may cause wedges in the gate later.
++hacking<0.13,>=0.12.0 # Apache-2.0
++
++coverage>=4.0 # Apache-2.0
++fixtures>=3.0.0 # Apache-2.0/BSD
++python-subunit>=0.0.18 # Apache-2.0/BSD
++sphinx>=1.3.1,<1.5.0
++testscenarios>=0.4 # Apache-2.0/BSD
++testtools>=1.4.0 # MIT
++testrepository>=0.0.18 # Apache-2.0/BSD
++mock>=2.0 # BSD
+ sphinxcontrib-programoutput
+-mock
+diff --git a/tests/builders/fixtures/saltstack-full.xml b/tests/builders/fixtures/saltstack-full.xml
+new file mode 100644
+index 0000000..cadc4f4
+--- /dev/null
++++ b/tests/builders/fixtures/saltstack-full.xml
+@@ -0,0 +1,75 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <builders>
++    <com.waytta.SaltAPIBuilder>
++      <servername>{{SALT_MASTER}}</servername>
++      <credentialsId>credentials ID</credentialsId>
++      <authtype>pam</authtype>
++      <target>{{HOSTS}}</target>
++      <targettype>list</targettype>
++      <clientInterface>runner</clientInterface>
++      <function>pkg.update</function>
++      <arguments/>
++      <kwarguments/>
++      <usePillar>true</usePillar>
++      <pillarkey>pkey</pillarkey>
++      <pillarvalue>pvalue</pillarvalue>
++      <blockbuild>true</blockbuild>
++      <jobPollTime>10</jobPollTime>
++      <batchSize>100%</batchSize>
++      <mods>runner_mods</mods>
++      <saveEnvVar>true</saveEnvVar>
++      <clientInterfaces>
++        <nullObject>false</nullObject>
++        <properties class="org.apache.commons.collections.map.ListOrderedMap" serialization="custom">
++          <org.apache.commons.collections.map.ListOrderedMap>
++            <default>
++              <insertOrder>
++                <string>mods</string>
++                <string>clientInterface</string>
++                <string>usePillar</string>
++              </insertOrder>
++            </default>
++            <map>
++              <entry>
++                <string>mods</string>
++                <string>runner_mods</string>
++              </entry>
++              <entry>
++                <string>clientInterface</string>
++                <string>runner</string>
++              </entry>
++              <entry>
++                <string>usePillar</string>
++                <net.sf.json.JSONObject>
++                  <nullObject>false</nullObject>
++                  <properties class="org.apache.commons.collections.map.ListOrderedMap" serialization="custom">
++                    <unserializable-parents/>
++                    <org.apache.commons.collections.map.ListOrderedMap>
++                      <default>
++                        <insertOrder>
++                          <string>pillarkey</string>
++                          <string>pillarvalue</string>
++                        </insertOrder>
++                      </default>
++                      <map>
++                        <entry>
++                          <string>pillarkey</string>
++                          <string>pkey</string>
++                        </entry>
++                        <entry>
++                          <string>pillarvalue</string>
++                          <string>pvalue</string>
++                        </entry>
++                      </map>
++                    </org.apache.commons.collections.map.ListOrderedMap>
++                  </properties>
++                </net.sf.json.JSONObject>
++              </entry>
++            </map>
++          </org.apache.commons.collections.map.ListOrderedMap>
++        </properties>
++      </clientInterfaces>
++    </com.waytta.SaltAPIBuilder>
++  </builders>
++</project>
+diff --git a/tests/builders/fixtures/saltstack-full.yaml b/tests/builders/fixtures/saltstack-full.yaml
+new file mode 100644
+index 0000000..444d2ea
+--- /dev/null
++++ b/tests/builders/fixtures/saltstack-full.yaml
+@@ -0,0 +1,15 @@
++builders:
++  - saltstack:
++      servername: '{{SALT_MASTER}}'
++      credentials: 'credentials ID'
++      clientinterface: runner
++      mods: runner_mods
++      setpillardata: true
++      pillarkey: pkey
++      pillarvalue: pvalue
++      wait: true
++      polltime: 10
++      target: '{{HOSTS}}'
++      targettype: list
++      function: pkg.update
++      saveoutput: true
+diff --git a/tests/builders/fixtures/saltstack-minimal.xml b/tests/builders/fixtures/saltstack-minimal.xml
+new file mode 100644
+index 0000000..30aeda9
+--- /dev/null
++++ b/tests/builders/fixtures/saltstack-minimal.xml
+@@ -0,0 +1,52 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <builders>
++    <com.waytta.SaltAPIBuilder>
++      <servername>{{SALT_MASTER}}</servername>
++      <credentialsId>credentials ID</credentialsId>
++      <authtype>pam</authtype>
++      <target/>
++      <targettype>glob</targettype>
++      <clientInterface>local</clientInterface>
++      <function/>
++      <arguments/>
++      <kwarguments/>
++      <usePillar>false</usePillar>
++      <pillarkey/>
++      <pillarvalue/>
++      <blockbuild>false</blockbuild>
++      <jobPollTime/>
++      <batchSize>100%</batchSize>
++      <mods/>
++      <saveEnvVar>false</saveEnvVar>
++      <clientInterfaces>
++        <nullObject>false</nullObject>
++        <properties class="org.apache.commons.collections.map.ListOrderedMap" serialization="custom">
++          <org.apache.commons.collections.map.ListOrderedMap>
++            <default>
++              <insertOrder>
++                <string>blockbuild</string>
++                <string>jobPollTime</string>
++                <string>clientInterface</string>
++              </insertOrder>
++            </default>
++            <map>
++              <entry>
++                <string>blockbuild</string>
++                <string>false</string>
++              </entry>
++              <entry>
++                <string>jobPollTime</string>
++                <string/>
++              </entry>
++              <entry>
++                <string>clientInterface</string>
++                <string>local</string>
++              </entry>
++            </map>
++          </org.apache.commons.collections.map.ListOrderedMap>
++        </properties>
++      </clientInterfaces>
++    </com.waytta.SaltAPIBuilder>
++  </builders>
++</project>
+diff --git a/tests/builders/fixtures/saltstack-minimal.yaml b/tests/builders/fixtures/saltstack-minimal.yaml
+new file mode 100644
+index 0000000..5ec8a81
+--- /dev/null
++++ b/tests/builders/fixtures/saltstack-minimal.yaml
+@@ -0,0 +1,4 @@
++builders:
++  - saltstack:
++      servername: '{{SALT_MASTER}}'
++      credentials: 'credentials ID'
+diff --git a/tests/macros/fixtures/scm/multi-scms002.xml b/tests/macros/fixtures/scm/multi-scms002.xml
+index 9e15c2f..ba788f9 100644
+--- a/tests/macros/fixtures/scm/multi-scms002.xml
++++ b/tests/macros/fixtures/scm/multi-scms002.xml
+@@ -12,12 +12,6 @@
+     <scms>
+       <hudson.plugins.repo.RepoScm>
+         <manifestRepositoryUrl>https://example.com/project/</manifestRepositoryUrl>
+-        <manifestBranch>stable</manifestBranch>
+-        <manifestFile>repo.xml</manifestFile>
+-        <manifestGroup>drivers</manifestGroup>
+-        <destinationDir>build</destinationDir>
+-        <repoUrl>https://internal.net/projects/repo</repoUrl>
+-        <mirrorDir>~/git/project/</mirrorDir>
+         <jobs>3</jobs>
+         <depth>2</depth>
+         <currentBranch>false</currentBranch>
+@@ -27,7 +21,12 @@
+         <noTags>false</noTags>
+         <trace>false</trace>
+         <showAllChanges>false</showAllChanges>
+-        <localManifest/>
++        <manifestBranch>stable</manifestBranch>
++        <manifestFile>repo.xml</manifestFile>
++        <manifestGroup>drivers</manifestGroup>
++        <destinationDir>build</destinationDir>
++        <repoUrl>https://internal.net/projects/repo</repoUrl>
++        <mirrorDir>~/git/project/</mirrorDir>
+         <ignoreProjects class="linked-hash-set">
+           <string/>
+         </ignoreProjects>
+diff --git a/tests/publishers/fixtures/archive003.xml b/tests/publishers/fixtures/archive003.xml
+index ecfff76..4ce5ff6 100644
+--- a/tests/publishers/fixtures/archive003.xml
++++ b/tests/publishers/fixtures/archive003.xml
+@@ -8,6 +8,7 @@
+       <onlyIfSuccessful>false</onlyIfSuccessful>
+       <fingerprint>true</fingerprint>
+       <defaultExcludes>true</defaultExcludes>
++      <caseSensitive>false</caseSensitive>
+     </hudson.tasks.ArtifactArchiver>
+   </publishers>
+ </project>
+diff --git a/tests/publishers/fixtures/archive003.yaml b/tests/publishers/fixtures/archive003.yaml
+index bfbceef..00fa792 100644
+--- a/tests/publishers/fixtures/archive003.yaml
++++ b/tests/publishers/fixtures/archive003.yaml
+@@ -4,3 +4,4 @@ publishers:
+       allow-empty: 'true'
+       only-if-success: 'false'
+       fingerprint: true
++      case-sensitive: false
+diff --git a/tests/publishers/fixtures/email-ext003.xml b/tests/publishers/fixtures/email-ext003.xml
+new file mode 100644
+index 0000000..880ce7f
+--- /dev/null
++++ b/tests/publishers/fixtures/email-ext003.xml
+@@ -0,0 +1,188 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.emailext.ExtendedEmailPublisher>
++      <recipientList>foo@example.com, bar@example.com</recipientList>
++      <configuredTriggers>
++        <hudson.plugins.emailext.plugins.trigger.AlwaysTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.AlwaysTrigger>
++        <hudson.plugins.emailext.plugins.trigger.UnstableTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.UnstableTrigger>
++        <hudson.plugins.emailext.plugins.trigger.FirstFailureTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.FirstFailureTrigger>
++        <hudson.plugins.emailext.plugins.trigger.NotBuiltTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.NotBuiltTrigger>
++        <hudson.plugins.emailext.plugins.trigger.AbortedTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.AbortedTrigger>
++        <hudson.plugins.emailext.plugins.trigger.RegressionTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.RegressionTrigger>
++        <hudson.plugins.emailext.plugins.trigger.FailureTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.FailureTrigger>
++        <hudson.plugins.emailext.plugins.trigger.SecondFailureTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.SecondFailureTrigger>
++        <hudson.plugins.emailext.plugins.trigger.ImprovementTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.ImprovementTrigger>
++        <hudson.plugins.emailext.plugins.trigger.StillFailingTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.StillFailingTrigger>
++        <hudson.plugins.emailext.plugins.trigger.SuccessTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.SuccessTrigger>
++        <hudson.plugins.emailext.plugins.trigger.FixedTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.FixedTrigger>
++        <hudson.plugins.emailext.plugins.trigger.StillUnstableTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.StillUnstableTrigger>
++        <hudson.plugins.emailext.plugins.trigger.PreBuildTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++        </hudson.plugins.emailext.plugins.trigger.PreBuildTrigger>
++        <hudson.plugins.emailext.plugins.trigger.ScriptTrigger>
++          <email>
++            <recipientList/>
++            <subject>$PROJECT_DEFAULT_SUBJECT</subject>
++            <body>$PROJECT_DEFAULT_CONTENT</body>
++            <sendToDevelopers>true</sendToDevelopers>
++            <sendToRequester>true</sendToRequester>
++            <includeCulprits>true</includeCulprits>
++            <sendToRecipientList>true</sendToRecipientList>
++          </email>
++          <triggerScript>build.result.toString().equals('SUCCESS')</triggerScript>
++        </hudson.plugins.emailext.plugins.trigger.ScriptTrigger>
++      </configuredTriggers>
++      <contentType>text/html</contentType>
++      <defaultSubject>Subject for Build ${BUILD_NUMBER}</defaultSubject>
++      <defaultContent>The build has finished</defaultContent>
++      <attachmentsPattern>*/foo*.log</attachmentsPattern>
++      <presendScript>cancel=true</presendScript>
++      <postsendScript>cancel=true</postsendScript>
++      <attachBuildLog>false</attachBuildLog>
++      <compressBuildLog>false</compressBuildLog>
++      <saveOutput>true</saveOutput>
++      <disabled>false</disabled>
++      <replyTo>foo@example.com</replyTo>
++      <matrixTriggerMode>ONLY_CONFIGURATIONS</matrixTriggerMode>
++    </hudson.plugins.emailext.ExtendedEmailPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/email-ext003.yaml b/tests/publishers/fixtures/email-ext003.yaml
+new file mode 100644
+index 0000000..0ad5c29
+--- /dev/null
++++ b/tests/publishers/fixtures/email-ext003.yaml
+@@ -0,0 +1,34 @@
++publishers:
++  - email-ext:
++      recipients: foo@example.com, bar@example.com
++      reply-to: foo@example.com
++      content-type: html
++      subject: Subject for Build ${BUILD_NUMBER}
++      body: The build has finished
++      attach-build-log: false
++      compress-log: false
++      attachments: "*/foo*.log"
++      always: true
++      unstable: true
++      first-failure: true
++      not-built: true
++      aborted: true
++      regression: true
++      failure: true
++      second-failure: true
++      improvement: true
++      still-failing: true
++      success: true
++      fixed: true
++      still-unstable: true
++      pre-build: true
++      trigger-script: "build.result.toString().equals('SUCCESS')"
++      matrix-trigger: only-configurations
++      presend-script: "cancel=true"
++      postsend-script: "cancel=true"
++      save-output: true
++      send-to:
++        - developers
++        - requester
++        - culprits
++        - recipients
+diff --git a/tests/publishers/fixtures/junit002.xml b/tests/publishers/fixtures/junit002.xml
+index cb16862..f2dd4fc 100644
+--- a/tests/publishers/fixtures/junit002.xml
++++ b/tests/publishers/fixtures/junit002.xml
+@@ -11,6 +11,7 @@
+         <hudson.plugins.claim.ClaimTestDataPublisher/>
+         <hudson.plugins.measurement__plots.TestDataPublisher/>
+         <com.google.jenkins.flakyTestHandler.plugin.JUnitFlakyTestDataPublisher/>
++        <hudson.plugins.junitattachments.AttachmentPublisher/>
+       </testDataPublishers>
+     </hudson.tasks.junit.JUnitResultArchiver>
+   </publishers>
+diff --git a/tests/publishers/fixtures/junit002.yaml b/tests/publishers/fixtures/junit002.yaml
+index 3bd171f..575cef8 100644
+--- a/tests/publishers/fixtures/junit002.yaml
++++ b/tests/publishers/fixtures/junit002.yaml
+@@ -9,3 +9,4 @@ publishers:
+     measurement-plots: true
+     flaky-test-reports: true
+     allow-empty-results: true
++    junit-attachments: true
+diff --git a/tests/publishers/fixtures/mqtt-full.xml b/tests/publishers/fixtures/mqtt-full.xml
+new file mode 100644
+index 0000000..59e28d8
+--- /dev/null
++++ b/tests/publishers/fixtures/mqtt-full.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <jenkins.plugins.mqttnotification.MqttNotifier plugin="mqtt-notification-plugin">
++      <brokerUrl>tcp://localhost:1883</brokerUrl>
++      <credentialsId>abcde</credentialsId>
++      <topic>hello</topic>
++      <message>world</message>
++      <qos>2</qos>
++      <retainMessage>true</retainMessage>
++    </jenkins.plugins.mqttnotification.MqttNotifier>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/mqtt-full.yaml b/tests/publishers/fixtures/mqtt-full.yaml
+new file mode 100644
+index 0000000..d1a6803
+--- /dev/null
++++ b/tests/publishers/fixtures/mqtt-full.yaml
+@@ -0,0 +1,8 @@
++publishers:
++  - mqtt:
++      broker-url: tcp://localhost:1883
++      topic: hello
++      message: world
++      qos: EXACTLY_ONCE
++      retain-message: true
++      credentials-id: abcde
+diff --git a/tests/publishers/fixtures/mqtt-minimal.xml b/tests/publishers/fixtures/mqtt-minimal.xml
+new file mode 100644
+index 0000000..f9eca58
+--- /dev/null
++++ b/tests/publishers/fixtures/mqtt-minimal.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <jenkins.plugins.mqttnotification.MqttNotifier plugin="mqtt-notification-plugin">
++      <brokerUrl>tcp://localhost:1883</brokerUrl>
++      <topic>jenkins/$PROJECT_URL</topic>
++      <message>$BUILD_RESULT</message>
++      <qos>0</qos>
++      <retainMessage>false</retainMessage>
++    </jenkins.plugins.mqttnotification.MqttNotifier>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/mqtt-minimal.yaml b/tests/publishers/fixtures/mqtt-minimal.yaml
+new file mode 100644
+index 0000000..ca8cfb9
+--- /dev/null
++++ b/tests/publishers/fixtures/mqtt-minimal.yaml
+@@ -0,0 +1,3 @@
++publishers:
++  - mqtt:
++      broker-url: tcp://localhost:1883
+diff --git a/tests/publishers/fixtures/richtext-complete.xml b/tests/publishers/fixtures/richtext-complete.xml
+new file mode 100644
+index 0000000..58fadac
+--- /dev/null
++++ b/tests/publishers/fixtures/richtext-complete.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <org.korosoft.jenkins.plugin.rtp.RichTextPublisher plugin="rich-text-publisher-plugin">
++      <stableText>the stable text</stableText>
++      <unstableText>the unstable text</unstableText>
++      <failedText>the failed text</failedText>
++      <unstableAsStable>false</unstableAsStable>
++      <failedAsStable>false</failedAsStable>
++      <parserName>HTML</parserName>
++    </org.korosoft.jenkins.plugin.rtp.RichTextPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/richtext-complete.yaml b/tests/publishers/fixtures/richtext-complete.yaml
+new file mode 100644
+index 0000000..593588e
+--- /dev/null
++++ b/tests/publishers/fixtures/richtext-complete.yaml
+@@ -0,0 +1,8 @@
++publishers:
++    - rich-text-publisher:
++        stable-text: the stable text
++        unstable-text: the unstable text
++        failed-text: the failed text
++        unstable-as-stable: false
++        failed-as-stable: false
++        parser-name: HTML
+diff --git a/tests/publishers/fixtures/richtext-minimal.xml b/tests/publishers/fixtures/richtext-minimal.xml
+new file mode 100644
+index 0000000..8ac2b7c
+--- /dev/null
++++ b/tests/publishers/fixtures/richtext-minimal.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <org.korosoft.jenkins.plugin.rtp.RichTextPublisher plugin="rich-text-publisher-plugin">
++      <stableText>testing</stableText>
++      <unstableText/>
++      <failedText/>
++      <unstableAsStable>true</unstableAsStable>
++      <failedAsStable>true</failedAsStable>
++      <parserName>WikiText</parserName>
++    </org.korosoft.jenkins.plugin.rtp.RichTextPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/richtext-minimal.yaml b/tests/publishers/fixtures/richtext-minimal.yaml
+new file mode 100644
+index 0000000..f8c086b
+--- /dev/null
++++ b/tests/publishers/fixtures/richtext-minimal.yaml
+@@ -0,0 +1,3 @@
++publishers:
++    - rich-text-publisher:
++        stable-text: testing
+diff --git a/tests/publishers/fixtures/richtext001.xml b/tests/publishers/fixtures/richtext001.xml
+deleted file mode 100644
+index 0987922..0000000
+--- a/tests/publishers/fixtures/richtext001.xml
++++ /dev/null
+@@ -1,13 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<project>
+-  <publishers>
+-    <org.korosoft.jenkins.plugin.rtp.RichTextPublisher>
+-      <stableText>testing</stableText>
+-      <unstableText/>
+-      <failedText/>
+-      <unstableAsStable>True</unstableAsStable>
+-      <failedAsStable>True</failedAsStable>
+-      <parserName>HTML</parserName>
+-    </org.korosoft.jenkins.plugin.rtp.RichTextPublisher>
+-  </publishers>
+-</project>
+diff --git a/tests/publishers/fixtures/richtext001.yaml b/tests/publishers/fixtures/richtext001.yaml
+deleted file mode 100644
+index 09d94f0..0000000
+--- a/tests/publishers/fixtures/richtext001.yaml
++++ /dev/null
+@@ -1,4 +0,0 @@
+-publishers:
+-    - rich-text-publisher:
+-        stable-text: testing
+-        parser-name: HTML
+diff --git a/tests/publishers/fixtures/richtext002.xml b/tests/publishers/fixtures/richtext002.xml
+deleted file mode 100644
+index cd26427..0000000
+--- a/tests/publishers/fixtures/richtext002.xml
++++ /dev/null
+@@ -1,13 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<project>
+-  <publishers>
+-    <org.korosoft.jenkins.plugin.rtp.RichTextPublisher>
+-      <stableText>the stable text</stableText>
+-      <unstableText>the unstable text</unstableText>
+-      <failedText/>
+-      <unstableAsStable>False</unstableAsStable>
+-      <failedAsStable>True</failedAsStable>
+-      <parserName>HTML</parserName>
+-    </org.korosoft.jenkins.plugin.rtp.RichTextPublisher>
+-  </publishers>
+-</project>
+diff --git a/tests/publishers/fixtures/richtext002.yaml b/tests/publishers/fixtures/richtext002.yaml
+deleted file mode 100644
+index 052d0b6..0000000
+--- a/tests/publishers/fixtures/richtext002.yaml
++++ /dev/null
+@@ -1,5 +0,0 @@
+-publishers:
+-    - rich-text-publisher:
+-        stable-text: the stable text
+-        unstable-text: the unstable text
+-        parser-name: HTML
+diff --git a/tests/publishers/fixtures/robot-complete.xml b/tests/publishers/fixtures/robot-complete.xml
+new file mode 100644
+index 0000000..7c3ceaf
+--- /dev/null
++++ b/tests/publishers/fixtures/robot-complete.xml
+@@ -0,0 +1,21 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.robot.RobotPublisher plugin="robot">
++      <outputPath>reports/robot</outputPath>
++      <logFileLink>report.html</logFileLink>
++      <reportFileName>custom-report.html</reportFileName>
++      <logFileName>custom-log.html</logFileName>
++      <outputFileName>custom-output.xml</outputFileName>
++      <passThreshold>80.0</passThreshold>
++      <unstableThreshold>60.0</unstableThreshold>
++      <onlyCritical>false</onlyCritical>
++      <enableCache>false</enableCache>
++      <otherFiles>
++        <string>extra-file1.html</string>
++        <string>extra-file2.txt</string>
++      </otherFiles>
++      <disableArchiveOutput>true</disableArchiveOutput>
++    </hudson.plugins.robot.RobotPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/robot-complete.yaml b/tests/publishers/fixtures/robot-complete.yaml
+new file mode 100644
+index 0000000..fa4019e
+--- /dev/null
++++ b/tests/publishers/fixtures/robot-complete.yaml
+@@ -0,0 +1,15 @@
++publishers:
++  - robot:
++      output-path: reports/robot
++      log-file-link: report.html
++      report-html: custom-report.html
++      log-html: custom-log.html
++      output-xml: custom-output.xml
++      pass-threshold: 80.0
++      unstable-threshold: 60.0
++      only-critical: false
++      enable-cache: false
++      other-files:
++        - extra-file1.html
++        - extra-file2.txt
++      archive-output-xml: false
+diff --git a/tests/publishers/fixtures/robot-minimal.xml b/tests/publishers/fixtures/robot-minimal.xml
+new file mode 100644
+index 0000000..05c4844
+--- /dev/null
++++ b/tests/publishers/fixtures/robot-minimal.xml
+@@ -0,0 +1,18 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.robot.RobotPublisher plugin="robot">
++      <outputPath>reports/robot</outputPath>
++      <logFileLink/>
++      <reportFileName>report.html</reportFileName>
++      <logFileName>log.html</logFileName>
++      <outputFileName>output.xml</outputFileName>
++      <passThreshold>0.0</passThreshold>
++      <unstableThreshold>0.0</unstableThreshold>
++      <onlyCritical>true</onlyCritical>
++      <enableCache>true</enableCache>
++      <otherFiles/>
++      <disableArchiveOutput>false</disableArchiveOutput>
++    </hudson.plugins.robot.RobotPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/robot-minimal.yaml b/tests/publishers/fixtures/robot-minimal.yaml
+new file mode 100644
+index 0000000..8b26ce4
+--- /dev/null
++++ b/tests/publishers/fixtures/robot-minimal.yaml
+@@ -0,0 +1,3 @@
++publishers:
++  - robot:
++      output-path: reports/robot
+diff --git a/tests/publishers/fixtures/robot001.xml b/tests/publishers/fixtures/robot001.xml
+deleted file mode 100644
+index fdf2275..0000000
+--- a/tests/publishers/fixtures/robot001.xml
++++ /dev/null
+@@ -1,20 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<project>
+-  <publishers>
+-    <hudson.plugins.robot.RobotPublisher>
+-      <outputPath>reports/robot</outputPath>
+-      <logFileLink>report.html</logFileLink>
+-      <reportFileName>custom-report.html</reportFileName>
+-      <logFileName>custom-log.html</logFileName>
+-      <outputFileName>custom-output.xml</outputFileName>
+-      <passThreshold>80.0</passThreshold>
+-      <unstableThreshold>60.0</unstableThreshold>
+-      <onlyCritical>false</onlyCritical>
+-      <otherFiles>
+-        <string>extra-file1.html</string>
+-        <string>extra-file2.txt</string>
+-      </otherFiles>
+-      <disableArchiveOutput>true</disableArchiveOutput>
+-    </hudson.plugins.robot.RobotPublisher>
+-  </publishers>
+-</project>
+diff --git a/tests/publishers/fixtures/robot001.yaml b/tests/publishers/fixtures/robot001.yaml
+deleted file mode 100644
+index 30538b0..0000000
+--- a/tests/publishers/fixtures/robot001.yaml
++++ /dev/null
+@@ -1,14 +0,0 @@
+-publishers:
+-  - robot:
+-      output-path: reports/robot
+-      log-file-link: report.html
+-      report-html: custom-report.html
+-      log-html: custom-log.html
+-      output-xml: custom-output.xml
+-      pass-threshold: 80.0
+-      unstable-threshold: 60.0
+-      only-critical: false
+-      other-files:
+-        - extra-file1.html
+-        - extra-file2.txt
+-      archive-output-xml: false
+diff --git a/tests/publishers/fixtures/sloccount-complete.xml b/tests/publishers/fixtures/sloccount-complete.xml
+new file mode 100644
+index 0000000..3af2736
+--- /dev/null
++++ b/tests/publishers/fixtures/sloccount-complete.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.sloccount.SloccountPublisher plugin="sloccount">
++      <pattern>sloccount.sc</pattern>
++      <encoding>latin-1</encoding>
++      <numBuildsInGraph>1</numBuildsInGraph>
++      <commentIsCode>true</commentIsCode>
++      <ignoreBuildFailure>true</ignoreBuildFailure>
++    </hudson.plugins.sloccount.SloccountPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/sloccount-complete.yaml b/tests/publishers/fixtures/sloccount-complete.yaml
+new file mode 100644
+index 0000000..43b61fc
+--- /dev/null
++++ b/tests/publishers/fixtures/sloccount-complete.yaml
+@@ -0,0 +1,7 @@
++publishers:
++  - sloccount:
++      report-files: sloccount.sc
++      charset: latin-1
++      builds-in-graph: 1
++      comment-is-code: true
++      ignore-build-failure: true
+diff --git a/tests/publishers/fixtures/sloccount-minimal.xml b/tests/publishers/fixtures/sloccount-minimal.xml
+new file mode 100644
+index 0000000..6b15d7d
+--- /dev/null
++++ b/tests/publishers/fixtures/sloccount-minimal.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.sloccount.SloccountPublisher plugin="sloccount">
++      <pattern>**/sloccount.sc</pattern>
++      <encoding>UTF-8</encoding>
++      <numBuildsInGraph>0</numBuildsInGraph>
++      <commentIsCode>false</commentIsCode>
++      <ignoreBuildFailure>false</ignoreBuildFailure>
++    </hudson.plugins.sloccount.SloccountPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/sloccount-minimal.yaml b/tests/publishers/fixtures/sloccount-minimal.yaml
+new file mode 100644
+index 0000000..d83d8d3
+--- /dev/null
++++ b/tests/publishers/fixtures/sloccount-minimal.yaml
+@@ -0,0 +1,2 @@
++publishers:
++  - sloccount
+diff --git a/tests/publishers/fixtures/sloccount001.xml b/tests/publishers/fixtures/sloccount001.xml
+deleted file mode 100644
+index 0e9a22e..0000000
+--- a/tests/publishers/fixtures/sloccount001.xml
++++ /dev/null
+@@ -1,9 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<project>
+-  <publishers>
+-    <hudson.plugins.sloccount.SloccountPublisher>
+-      <pattern>sloccount.sc</pattern>
+-      <encoding>latin-1</encoding>
+-    </hudson.plugins.sloccount.SloccountPublisher>
+-  </publishers>
+-</project>
+diff --git a/tests/publishers/fixtures/sloccount001.yaml b/tests/publishers/fixtures/sloccount001.yaml
+deleted file mode 100644
+index cac1e96..0000000
+--- a/tests/publishers/fixtures/sloccount001.yaml
++++ /dev/null
+@@ -1,4 +0,0 @@
+-publishers:
+-  - sloccount:
+-      report-files: sloccount.sc
+-      charset: latin-1
+diff --git a/tests/publishers/fixtures/warnings-complete.xml b/tests/publishers/fixtures/warnings-complete.xml
+new file mode 100644
+index 0000000..d3bfc47
+--- /dev/null
++++ b/tests/publishers/fixtures/warnings-complete.xml
+@@ -0,0 +1,57 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.warnings.WarningsPublisher plugin="warnings">
++      <consoleParsers>
++        <hudson.plugins.warnings.ConsoleParser>
++          <parserName>FxCop</parserName>
++        </hudson.plugins.warnings.ConsoleParser>
++        <hudson.plugins.warnings.ConsoleParser>
++          <parserName>CodeAnalysis</parserName>
++        </hudson.plugins.warnings.ConsoleParser>
++      </consoleParsers>
++      <parserConfigurations>
++        <hudson.plugins.warnings.ParserConfiguration>
++          <pattern>**/*.out</pattern>
++          <parserName>AcuCobol Compiler</parserName>
++        </hudson.plugins.warnings.ParserConfiguration>
++        <hudson.plugins.warnings.ParserConfiguration>
++          <pattern>**/*.warnings</pattern>
++          <parserName>FxCop</parserName>
++        </hudson.plugins.warnings.ParserConfiguration>
++      </parserConfigurations>
++      <includePattern>[a-zA-Z]\.java,[a-zA-Z]\.cpp</includePattern>
++      <excludePattern>[a-zA-Z]\.html,[a-zA-Z]\.js</excludePattern>
++      <pluginName>[WARNINGS]</pluginName>
++      <canRunOnFailed>true</canRunOnFailed>
++      <shouldDetectModules>true</shouldDetectModules>
++      <healthy>50</healthy>
++      <unHealthy>25</unHealthy>
++      <thresholdLimit>normal</thresholdLimit>
++      <defaultEncoding>ISO-8859-9</defaultEncoding>
++      <doNotResolveRelativePaths>false</doNotResolveRelativePaths>
++      <thresholds>
++        <unstableTotalAll>90</unstableTotalAll>
++        <unstableTotalHigh>90</unstableTotalHigh>
++        <unstableTotalNormal>40</unstableTotalNormal>
++        <unstableTotalLow>30</unstableTotalLow>
++        <failedTotalAll>100</failedTotalAll>
++        <failedTotalHigh>100</failedTotalHigh>
++        <failedTotalNormal>50</failedTotalNormal>
++        <failedTotalLow>40</failedTotalLow>
++        <unstableNewAll>100</unstableNewAll>
++        <unstableNewHigh>50</unstableNewHigh>
++        <unstableNewNormal>30</unstableNewNormal>
++        <unstableNewLow>10</unstableNewLow>
++        <failedNewAll>100</failedNewAll>
++        <failedNewHigh>60</failedNewHigh>
++        <failedNewNormal>50</failedNewNormal>
++        <failedNewLow>40</failedNewLow>
++      </thresholds>
++      <dontComputeNew>false</dontComputeNew>
++      <useDeltaValues>true</useDeltaValues>
++      <usePreviousBuildAsReference>true</usePreviousBuildAsReference>
++      <useStableBuildAsReference>true</useStableBuildAsReference>
++    </hudson.plugins.warnings.WarningsPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/warnings-complete.yaml b/tests/publishers/fixtures/warnings-complete.yaml
+new file mode 100644
+index 0000000..17d005d
+--- /dev/null
++++ b/tests/publishers/fixtures/warnings-complete.yaml
+@@ -0,0 +1,44 @@
++publishers:
++  - warnings:
++      console-log-parsers:
++        - FxCop
++        - CodeAnalysis
++      workspace-file-scanners:
++        - file-pattern: '**/*.out'
++          scanner: 'AcuCobol Compiler'
++        - file-pattern: '**/*.warnings'
++          scanner: FxCop
++      files-to-include: '[a-zA-Z]\.java,[a-zA-Z]\.cpp'
++      files-to-ignore: '[a-zA-Z]\.html,[a-zA-Z]\.js'
++      run-always: true
++      detect-modules: true
++      resolve-relative-paths: true
++      health-threshold-high: 50
++      health-threshold-low: 25
++      health-priorities: high-and-normal
++      total-thresholds:
++        unstable:
++          total-all: 90
++          total-high: 90
++          total-normal: 40
++          total-low: 30
++        failed:
++          total-all: 100
++          total-high: 100
++          total-normal: 50
++          total-low: 40
++      new-thresholds:
++        unstable:
++          new-all: 100
++          new-high: 50
++          new-normal: 30
++          new-low: 10
++        failed:
++          new-all: 100
++          new-high: 60
++          new-normal: 50
++          new-low: 40
++      use-delta-for-new-warnings: true
++      use-previous-build-as-reference: true
++      only-use-stable-builds-as-reference: true
++      default-encoding: ISO-8859-9
+diff --git a/tests/publishers/fixtures/warnings-minimal.xml b/tests/publishers/fixtures/warnings-minimal.xml
+new file mode 100644
+index 0000000..e26b4f5
+--- /dev/null
++++ b/tests/publishers/fixtures/warnings-minimal.xml
+@@ -0,0 +1,41 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.warnings.WarningsPublisher plugin="warnings">
++      <consoleParsers/>
++      <parserConfigurations/>
++      <includePattern/>
++      <excludePattern/>
++      <pluginName>[WARNINGS]</pluginName>
++      <canRunOnFailed>false</canRunOnFailed>
++      <shouldDetectModules>false</shouldDetectModules>
++      <healthy/>
++      <unHealthy/>
++      <thresholdLimit>low</thresholdLimit>
++      <defaultEncoding/>
++      <doNotResolveRelativePaths>true</doNotResolveRelativePaths>
++      <thresholds>
++        <unstableTotalAll/>
++        <unstableTotalHigh/>
++        <unstableTotalNormal/>
++        <unstableTotalLow/>
++        <failedTotalAll/>
++        <failedTotalHigh/>
++        <failedTotalNormal/>
++        <failedTotalLow/>
++        <unstableNewAll/>
++        <unstableNewHigh/>
++        <unstableNewNormal/>
++        <unstableNewLow/>
++        <failedNewAll/>
++        <failedNewHigh/>
++        <failedNewNormal/>
++        <failedNewLow/>
++      </thresholds>
++      <dontComputeNew>true</dontComputeNew>
++      <useDeltaValues>false</useDeltaValues>
++      <usePreviousBuildAsReference>false</usePreviousBuildAsReference>
++      <useStableBuildAsReference>false</useStableBuildAsReference>
++    </hudson.plugins.warnings.WarningsPublisher>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/warnings-minimal.yaml b/tests/publishers/fixtures/warnings-minimal.yaml
+new file mode 100644
+index 0000000..9aad429
+--- /dev/null
++++ b/tests/publishers/fixtures/warnings-minimal.yaml
+@@ -0,0 +1,2 @@
++publishers:
++  - warnings
+diff --git a/tests/publishers/fixtures/warnings001.xml b/tests/publishers/fixtures/warnings001.xml
+deleted file mode 100644
+index 803ae39..0000000
+--- a/tests/publishers/fixtures/warnings001.xml
++++ /dev/null
+@@ -1,56 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<project>
+-  <publishers>
+-    <hudson.plugins.warnings.WarningsPublisher>
+-      <consoleParsers>
+-        <hudson.plugins.warnings.ConsoleParser>
+-          <parserName>FxCop</parserName>
+-        </hudson.plugins.warnings.ConsoleParser>
+-        <hudson.plugins.warnings.ConsoleParser>
+-          <parserName>CodeAnalysis</parserName>
+-        </hudson.plugins.warnings.ConsoleParser>
+-      </consoleParsers>
+-      <parserConfigurations>
+-        <hudson.plugins.warnings.ParserConfiguration>
+-          <pattern>**/*.out</pattern>
+-          <parserName>AcuCobol Compiler</parserName>
+-        </hudson.plugins.warnings.ParserConfiguration>
+-        <hudson.plugins.warnings.ParserConfiguration>
+-          <pattern>**/*.warnings</pattern>
+-          <parserName>FxCop</parserName>
+-        </hudson.plugins.warnings.ParserConfiguration>
+-      </parserConfigurations>
+-      <includePattern>[a-zA-Z]\.java,[a-zA-Z]\.cpp</includePattern>
+-      <excludePattern>[a-zA-Z]\.html,[a-zA-Z]\.js</excludePattern>
+-      <canRunOnFailed>true</canRunOnFailed>
+-      <shouldDetectModules>true</shouldDetectModules>
+-      <doNotResolveRelativePaths>false</doNotResolveRelativePaths>
+-      <healthy>50</healthy>
+-      <unHealthy>25</unHealthy>
+-      <thresholdLimit>normal</thresholdLimit>
+-      <thresholds>
+-        <unstableTotalAll>90</unstableTotalAll>
+-        <unstableTotalHigh>90</unstableTotalHigh>
+-        <unstableTotalNormal>40</unstableTotalNormal>
+-        <unstableTotalLow>30</unstableTotalLow>
+-        <failedTotalAll>100</failedTotalAll>
+-        <failedTotalHigh>100</failedTotalHigh>
+-        <failedTotalNormal>50</failedTotalNormal>
+-        <failedTotalLow>40</failedTotalLow>
+-        <unstableNewAll>100</unstableNewAll>
+-        <unstableNewHigh>50</unstableNewHigh>
+-        <unstableNewNormal>30</unstableNewNormal>
+-        <unstableNewLow>10</unstableNewLow>
+-        <failedNewAll>100</failedNewAll>
+-        <failedNewHigh>60</failedNewHigh>
+-        <failedNewNormal>50</failedNewNormal>
+-        <failedNewLow>40</failedNewLow>
+-      </thresholds>
+-      <dontComputeNew>false</dontComputeNew>
+-      <useDeltaValues>true</useDeltaValues>
+-      <usePreviousBuildAsReference>true</usePreviousBuildAsReference>
+-      <useStableBuildAsReference>true</useStableBuildAsReference>
+-      <defaultEncoding>ISO-8859-9</defaultEncoding>
+-    </hudson.plugins.warnings.WarningsPublisher>
+-  </publishers>
+-</project>
+diff --git a/tests/publishers/fixtures/warnings001.yaml b/tests/publishers/fixtures/warnings001.yaml
+deleted file mode 100644
+index 17d005d..0000000
+--- a/tests/publishers/fixtures/warnings001.yaml
++++ /dev/null
+@@ -1,44 +0,0 @@
+-publishers:
+-  - warnings:
+-      console-log-parsers:
+-        - FxCop
+-        - CodeAnalysis
+-      workspace-file-scanners:
+-        - file-pattern: '**/*.out'
+-          scanner: 'AcuCobol Compiler'
+-        - file-pattern: '**/*.warnings'
+-          scanner: FxCop
+-      files-to-include: '[a-zA-Z]\.java,[a-zA-Z]\.cpp'
+-      files-to-ignore: '[a-zA-Z]\.html,[a-zA-Z]\.js'
+-      run-always: true
+-      detect-modules: true
+-      resolve-relative-paths: true
+-      health-threshold-high: 50
+-      health-threshold-low: 25
+-      health-priorities: high-and-normal
+-      total-thresholds:
+-        unstable:
+-          total-all: 90
+-          total-high: 90
+-          total-normal: 40
+-          total-low: 30
+-        failed:
+-          total-all: 100
+-          total-high: 100
+-          total-normal: 50
+-          total-low: 40
+-      new-thresholds:
+-        unstable:
+-          new-all: 100
+-          new-high: 50
+-          new-normal: 30
+-          new-low: 10
+-        failed:
+-          new-all: 100
+-          new-high: 60
+-          new-normal: 50
+-          new-low: 40
+-      use-delta-for-new-warnings: true
+-      use-previous-build-as-reference: true
+-      only-use-stable-builds-as-reference: true
+-      default-encoding: ISO-8859-9
+diff --git a/tests/publishers/fixtures/workspace-cleanup-complete.xml b/tests/publishers/fixtures/workspace-cleanup-complete.xml
+new file mode 100644
+index 0000000..d556386
+--- /dev/null
++++ b/tests/publishers/fixtures/workspace-cleanup-complete.xml
+@@ -0,0 +1,26 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.ws__cleanup.WsCleanup plugin="ws-cleanup">
++      <patterns>
++        <hudson.plugins.ws__cleanup.Pattern>
++          <pattern>*.zip</pattern>
++          <type>INCLUDE</type>
++        </hudson.plugins.ws__cleanup.Pattern>
++        <hudson.plugins.ws__cleanup.Pattern>
++          <pattern>*.txt</pattern>
++          <type>EXCLUDE</type>
++        </hudson.plugins.ws__cleanup.Pattern>
++      </patterns>
++      <deleteDirs>true</deleteDirs>
++      <cleanupMatrixParent>true</cleanupMatrixParent>
++      <externalDelete>command</externalDelete>
++      <cleanWhenSuccess>false</cleanWhenSuccess>
++      <cleanWhenUnstable>false</cleanWhenUnstable>
++      <cleanWhenFailure>false</cleanWhenFailure>
++      <cleanWhenNotBuilt>false</cleanWhenNotBuilt>
++      <cleanWhenAborted>false</cleanWhenAborted>
++      <notFailBuild>true</notFailBuild>
++    </hudson.plugins.ws__cleanup.WsCleanup>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/workspace-cleanup-complete.yaml b/tests/publishers/fixtures/workspace-cleanup-complete.yaml
+new file mode 100644
+index 0000000..1ea4149
+--- /dev/null
++++ b/tests/publishers/fixtures/workspace-cleanup-complete.yaml
+@@ -0,0 +1,16 @@
++publishers:
++  - workspace-cleanup:
++      include:
++        - "*.zip"
++      exclude:
++        - "*.txt"
++      clean-if:
++        - success: false
++        - unstable: false
++        - failure: false
++        - aborted: false
++        - not-built: false
++      dirmatch: true
++      fail-build: false
++      clean-parent: true
++      external-deletion-command: 'command'
+diff --git a/tests/publishers/fixtures/workspace-cleanup-minimal.xml b/tests/publishers/fixtures/workspace-cleanup-minimal.xml
+new file mode 100644
+index 0000000..36f0e03
+--- /dev/null
++++ b/tests/publishers/fixtures/workspace-cleanup-minimal.xml
+@@ -0,0 +1,16 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <publishers>
++    <hudson.plugins.ws__cleanup.WsCleanup plugin="ws-cleanup">
++      <deleteDirs>false</deleteDirs>
++      <cleanupMatrixParent>false</cleanupMatrixParent>
++      <externalDelete/>
++      <cleanWhenSuccess>true</cleanWhenSuccess>
++      <cleanWhenUnstable>true</cleanWhenUnstable>
++      <cleanWhenFailure>true</cleanWhenFailure>
++      <cleanWhenNotBuilt>true</cleanWhenNotBuilt>
++      <cleanWhenAborted>true</cleanWhenAborted>
++      <notFailBuild>true</notFailBuild>
++    </hudson.plugins.ws__cleanup.WsCleanup>
++  </publishers>
++</project>
+diff --git a/tests/publishers/fixtures/workspace-cleanup-minimal.yaml b/tests/publishers/fixtures/workspace-cleanup-minimal.yaml
+new file mode 100644
+index 0000000..aa91ee6
+--- /dev/null
++++ b/tests/publishers/fixtures/workspace-cleanup-minimal.yaml
+@@ -0,0 +1,2 @@
++publishers:
++  - workspace-cleanup
+diff --git a/tests/publishers/fixtures/workspace-cleanup001.xml b/tests/publishers/fixtures/workspace-cleanup001.xml
+deleted file mode 100644
+index 1929487..0000000
+--- a/tests/publishers/fixtures/workspace-cleanup001.xml
++++ /dev/null
+@@ -1,22 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<project>
+-  <publishers>
+-    <hudson.plugins.ws__cleanup.WsCleanup plugin="ws-cleanup">
+-      <patterns>
+-        <hudson.plugins.ws__cleanup.Pattern>
+-          <pattern>*.zip</pattern>
+-          <type>INCLUDE</type>
+-        </hudson.plugins.ws__cleanup.Pattern>
+-      </patterns>
+-      <deleteDirs>false</deleteDirs>
+-      <cleanupMatrixParent>false</cleanupMatrixParent>
+-      <externalDelete/>
+-      <cleanWhenSuccess>true</cleanWhenSuccess>
+-      <cleanWhenUnstable>true</cleanWhenUnstable>
+-      <cleanWhenFailure>true</cleanWhenFailure>
+-      <cleanWhenNotBuilt>false</cleanWhenNotBuilt>
+-      <cleanWhenAborted>true</cleanWhenAborted>
+-      <notFailBuild>true</notFailBuild>
+-    </hudson.plugins.ws__cleanup.WsCleanup>
+-  </publishers>
+-</project>
+diff --git a/tests/publishers/fixtures/workspace-cleanup001.yaml b/tests/publishers/fixtures/workspace-cleanup001.yaml
+deleted file mode 100644
+index 79caf3b..0000000
+--- a/tests/publishers/fixtures/workspace-cleanup001.yaml
++++ /dev/null
+@@ -1,7 +0,0 @@
+-publishers:
+-  - workspace-cleanup:
+-      include:
+-        - "*.zip"
+-      clean-if:
+-        - success: true
+-        - not-built: false
+diff --git a/tests/scm/fixtures/dimensions-full.xml b/tests/scm/fixtures/dimensions-full.xml
+new file mode 100644
+index 0000000..81e9594
+--- /dev/null
++++ b/tests/scm/fixtures/dimensions-full.xml
+@@ -0,0 +1,30 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <scm class="hudson.plugins.dimensionsscm.DimensionsSCM">
++    <project>myProduct:myProject</project>
++    <permissions>WRITABLE</permissions>
++    <eol>UNIX</eol>
++    <canJobUpdate>true</canJobUpdate>
++    <canJobDelete>true</canJobDelete>
++    <canJobForce>true</canJobForce>
++    <canJobRevert>true</canJobRevert>
++    <canJobExpand>true</canJobExpand>
++    <canJobNoMetadata>true</canJobNoMetadata>
++    <canJobNoTouch>true</canJobNoTouch>
++    <forceAsSlave>true</forceAsSlave>
++    <folders>
++      <string>src</string>
++      <string>test</string>
++    </folders>
++    <pathsToExclude>
++      <string>excluded_dir</string>
++      <string>excluded_other_dir</string>
++    </pathsToExclude>
++    <jobUserName>johnd</jobUserName>
++    <jobPasswd>passw0rd</jobPasswd>
++    <jobServer>my.dmscm.server:1234</jobServer>
++    <jobDatabase>myDatabase@myDsn</jobDatabase>
++    <jobTimeZone>Europe/Berlin</jobTimeZone>
++    <jobWebUrl>https://my.dmscm.weburl</jobWebUrl>
++  </scm>
++</project>
+diff --git a/tests/scm/fixtures/dimensions-full.yaml b/tests/scm/fixtures/dimensions-full.yaml
+new file mode 100644
+index 0000000..aaa13ab
+--- /dev/null
++++ b/tests/scm/fixtures/dimensions-full.yaml
+@@ -0,0 +1,25 @@
++scm:
++  - dimensions:
++      project: myProduct:myProject
++      permissions: WRITABLE
++      eol: UNIX
++      folders:
++        - src
++        - test
++      exclude:
++        - excluded_dir
++        - excluded_other_dir
++      username: johnd
++      password: passw0rd
++      server: my.dmscm.server:1234
++      database: myDatabase@myDsn
++      update: true
++      clear-workspace: true
++      force-build: true
++      overwrite-modified: true
++      expand-vars: true
++      no-metadata: true
++      maintain-timestamp: true
++      slave-checkout: true
++      timezone: Europe/Berlin
++      web-url: https://my.dmscm.weburl
+diff --git a/tests/scm/fixtures/dimensions-minimal.xml b/tests/scm/fixtures/dimensions-minimal.xml
+new file mode 100644
+index 0000000..560cce2
+--- /dev/null
++++ b/tests/scm/fixtures/dimensions-minimal.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<project>
++  <scm class="hudson.plugins.dimensionsscm.DimensionsSCM">
++    <project>myProduct:myProject</project>
++    <permissions>DEFAULT</permissions>
++    <eol>DEFAULT</eol>
++    <canJobUpdate>false</canJobUpdate>
++    <canJobDelete>false</canJobDelete>
++    <canJobForce>false</canJobForce>
++    <canJobRevert>false</canJobRevert>
++    <canJobExpand>false</canJobExpand>
++    <canJobNoMetadata>false</canJobNoMetadata>
++    <canJobNoTouch>false</canJobNoTouch>
++    <forceAsSlave>false</forceAsSlave>
++    <folders>
++      <string>/</string>
++    </folders>
++    <pathsToExclude/>
++  </scm>
++</project>
+diff --git a/tests/scm/fixtures/dimensions-minimal.yaml b/tests/scm/fixtures/dimensions-minimal.yaml
+new file mode 100644
+index 0000000..b003837
+--- /dev/null
++++ b/tests/scm/fixtures/dimensions-minimal.yaml
+@@ -0,0 +1,3 @@
++scm:
++  - dimensions:
++      project: myProduct:myProject
+diff --git a/tests/scm/fixtures/repo001.xml b/tests/scm/fixtures/repo001.xml
+index f63e819..93204fb 100644
+--- a/tests/scm/fixtures/repo001.xml
++++ b/tests/scm/fixtures/repo001.xml
+@@ -2,12 +2,6 @@
+ <project>
+   <scm class="hudson.plugins.repo.RepoScm">
+     <manifestRepositoryUrl>https://example.com/project/</manifestRepositoryUrl>
+-    <manifestBranch>stable</manifestBranch>
+-    <manifestFile>repo.xml</manifestFile>
+-    <manifestGroup>drivers</manifestGroup>
+-    <destinationDir>build</destinationDir>
+-    <repoUrl>https://internal.net/projects/repo</repoUrl>
+-    <mirrorDir>~/git/project/</mirrorDir>
+     <jobs>3</jobs>
+     <depth>0</depth>
+     <currentBranch>false</currentBranch>
+@@ -17,6 +11,12 @@
+     <noTags>true</noTags>
+     <trace>true</trace>
+     <showAllChanges>true</showAllChanges>
++    <manifestBranch>stable</manifestBranch>
++    <manifestFile>repo.xml</manifestFile>
++    <manifestGroup>drivers</manifestGroup>
++    <destinationDir>build</destinationDir>
++    <repoUrl>https://internal.net/projects/repo</repoUrl>
++    <mirrorDir>~/git/project/</mirrorDir>
+     <localManifest>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+ &lt;manifest&gt;
+   &lt;project path=&quot;external/project&quot; name=&quot;org/project&quot;
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template001.xml b/tests/yamlparser/fixtures/project_pipeline_template001.xml
+new file mode 100644
+index 0000000..f82dbe5
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template001.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0" encoding="utf-8"?>
++<flow-definition plugin="workflow-job">
++  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
++    <script>build job: &quot;job1&quot;
++parallel [
++  2a: build job: &quot;job2a&quot;,
++  2b: node &quot;dummynode&quot; {
++    sh &quot;echo I'm alive!&quot;
++  }
++]
++</script>
++    <sandbox>false</sandbox>
++  </definition>
++  <actions/>
++  <description>&lt;!-- Managed by Jenkins Job Builder --&gt;</description>
++  <keepDependencies>false</keepDependencies>
++  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
++  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
++  <concurrentBuild>false</concurrentBuild>
++  <canRoam>true</canRoam>
++  <properties/>
++  <scm class="hudson.scm.NullSCM"/>
++  <publishers/>
++  <buildWrappers/>
++</flow-definition>
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template001.yaml b/tests/yamlparser/fixtures/project_pipeline_template001.yaml
+new file mode 100644
+index 0000000..2044da3
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template001.yaml
+@@ -0,0 +1,11 @@
++- job:
++    name: test_job
++    project-type: pipeline
++    dsl: |
++      build job: "job1"
++      parallel [
++        2a: build job: "job2a",
++        2b: node "dummynode" {
++          sh "echo I'm alive!"
++        }
++      ]
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template002.xml b/tests/yamlparser/fixtures/project_pipeline_template002.xml
+new file mode 100644
+index 0000000..f92286d
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template002.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0" encoding="utf-8"?>
++<flow-definition plugin="workflow-job">
++  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
++    <script>build job: &quot;job1&quot;
++parallel [
++  2a: build job: &quot;job2a&quot;,
++  2b: node &quot;dummynode&quot; {
++    sh &quot;echo hello&quot;
++  }
++]
++</script>
++    <sandbox>false</sandbox>
++  </definition>
++  <actions/>
++  <description>&lt;!-- Managed by Jenkins Job Builder --&gt;</description>
++  <keepDependencies>false</keepDependencies>
++  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
++  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
++  <concurrentBuild>false</concurrentBuild>
++  <canRoam>true</canRoam>
++  <properties/>
++  <scm class="hudson.scm.NullSCM"/>
++  <publishers/>
++  <buildWrappers/>
++</flow-definition>
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template002.yaml b/tests/yamlparser/fixtures/project_pipeline_template002.yaml
+new file mode 100644
+index 0000000..bd0181f
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template002.yaml
+@@ -0,0 +1,22 @@
++- job-template:
++    name: '{name}-unit-tests'
++    project-type: pipeline
++    dsl: |
++        build job: "job1"
++        parallel [
++          2a: build job: "job2a",
++          2b: node "dummynode" {{
++            sh "echo {isay}"
++          }}
++        ]
++
++- job-group:
++    name: '{name}-tests'
++    jobs:
++      - '{name}-unit-tests':
++          isay: 'hello'
++
++- project:
++    name: project-name
++    jobs:
++    - '{name}-tests'
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template003.xml b/tests/yamlparser/fixtures/project_pipeline_template003.xml
+new file mode 100644
+index 0000000..8274d6a
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template003.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0" encoding="utf-8"?>
++<flow-definition plugin="workflow-job">
++  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
++    <script>build job: &quot;job1&quot;
++parallel [
++  2a: build job: &quot;job2a&quot;,
++  2b: node &quot;dummynode&quot; {
++    sh &quot;echo hello&quot;
++  }
++]
++</script>
++    <sandbox>true</sandbox>
++  </definition>
++  <actions/>
++  <description>&lt;!-- Managed by Jenkins Job Builder --&gt;</description>
++  <keepDependencies>false</keepDependencies>
++  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
++  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
++  <concurrentBuild>false</concurrentBuild>
++  <canRoam>true</canRoam>
++  <properties/>
++  <scm class="hudson.scm.NullSCM"/>
++  <publishers/>
++  <buildWrappers/>
++</flow-definition>
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template003.yaml b/tests/yamlparser/fixtures/project_pipeline_template003.yaml
+new file mode 100644
+index 0000000..a8fd611
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template003.yaml
+@@ -0,0 +1,23 @@
++- job-template:
++    name: '{name}-unit-tests'
++    project-type: pipeline
++    dsl: |
++        build job: "job1"
++        parallel [
++          2a: build job: "job2a",
++          2b: node "dummynode" {{
++            sh "echo {isay}"
++          }}
++        ]
++    sandbox: true
++
++- job-group:
++    name: '{name}-tests'
++    jobs:
++      - '{name}-unit-tests':
++          isay: 'hello'
++
++- project:
++    name: project-name
++    jobs:
++    - '{name}-tests'
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template004.xml b/tests/yamlparser/fixtures/project_pipeline_template004.xml
+new file mode 100644
+index 0000000..942de03
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template004.xml
+@@ -0,0 +1,26 @@
++<?xml version="1.0" encoding="utf-8"?>
++<flow-definition plugin="workflow-job">
++  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
++    <sandbox>true</sandbox>
++    <scm class="hudson.plugins.mercurial.MercurialSCM">
++      <source>http://hg.example.org/test_job</source>
++      <revisionType>BRANCH</revisionType>
++      <revision>default</revision>
++      <clean>true</clean>
++      <modules/>
++      <disableChangeLog>false</disableChangeLog>
++    </scm>
++    <scriptPath>Jenkinsfile.groovy</scriptPath>
++  </definition>
++  <actions/>
++  <description>&lt;!-- Managed by Jenkins Job Builder --&gt;</description>
++  <keepDependencies>false</keepDependencies>
++  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
++  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
++  <concurrentBuild>false</concurrentBuild>
++  <canRoam>true</canRoam>
++  <properties/>
++  <scm class="hudson.scm.NullSCM"/>
++  <publishers/>
++  <buildWrappers/>
++</flow-definition>
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template004.yaml b/tests/yamlparser/fixtures/project_pipeline_template004.yaml
+new file mode 100644
+index 0000000..5f2f8f5
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template004.yaml
+@@ -0,0 +1,11 @@
++- job:
++    name: test-job
++    project-type: pipeline
++    sandbox: true
++    pipeline-scm:
++      scm:
++        - hg:
++            url: http://hg.example.org/test_job
++            clean: true
++      script-path: Jenkinsfile.groovy
++
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template005.xml b/tests/yamlparser/fixtures/project_pipeline_template005.xml
+new file mode 100644
+index 0000000..7bafcbf
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template005.xml
+@@ -0,0 +1,65 @@
++<?xml version="1.0" encoding="utf-8"?>
++<flow-definition plugin="workflow-job">
++  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
++    <sandbox>false</sandbox>
++    <scm class="hudson.plugins.mercurial.MercurialSCM">
++      <source>http://hg.example.org/project</source>
++      <revisionType>BRANCH</revisionType>
++      <revision>default</revision>
++      <clean>true</clean>
++      <modules/>
++      <disableChangeLog>false</disableChangeLog>
++    </scm>
++    <scriptPath>Jenkinsfile</scriptPath>
++  </definition>
++  <actions/>
++  <description>&lt;!-- Managed by Jenkins Job Builder --&gt;</description>
++  <keepDependencies>false</keepDependencies>
++  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
++  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
++  <concurrentBuild>false</concurrentBuild>
++  <canRoam>true</canRoam>
++  <properties/>
++  <scm class="hudson.scm.NullSCM"/>
++  <publishers>
++    <hudson.tasks.Mailer plugin="mailer">
++      <recipients>qa@example.org</recipients>
++      <dontNotifyEveryUnstableBuild>false</dontNotifyEveryUnstableBuild>
++      <sendToIndividuals>false</sendToIndividuals>
++    </hudson.tasks.Mailer>
++  </publishers>
++  <buildWrappers/>
++</flow-definition>
++<BLANKLINE>
++<?xml version="1.0" encoding="utf-8"?>
++<flow-definition plugin="workflow-job">
++  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
++    <sandbox>true</sandbox>
++    <scm class="hudson.plugins.mercurial.MercurialSCM">
++      <source>http://hg.example.org/project</source>
++      <revisionType>BRANCH</revisionType>
++      <revision>default</revision>
++      <clean>true</clean>
++      <modules/>
++      <disableChangeLog>false</disableChangeLog>
++    </scm>
++    <scriptPath>Jenkinsfile</scriptPath>
++  </definition>
++  <actions/>
++  <description>&lt;!-- Managed by Jenkins Job Builder --&gt;</description>
++  <keepDependencies>false</keepDependencies>
++  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
++  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
++  <concurrentBuild>false</concurrentBuild>
++  <canRoam>true</canRoam>
++  <properties/>
++  <scm class="hudson.scm.NullSCM"/>
++  <publishers>
++    <hudson.tasks.Mailer plugin="mailer">
++      <recipients>dev@example.org</recipients>
++      <dontNotifyEveryUnstableBuild>false</dontNotifyEveryUnstableBuild>
++      <sendToIndividuals>false</sendToIndividuals>
++    </hudson.tasks.Mailer>
++  </publishers>
++  <buildWrappers/>
++</flow-definition>
+diff --git a/tests/yamlparser/fixtures/project_pipeline_template005.yaml b/tests/yamlparser/fixtures/project_pipeline_template005.yaml
+new file mode 100644
+index 0000000..851feaf
+--- /dev/null
++++ b/tests/yamlparser/fixtures/project_pipeline_template005.yaml
+@@ -0,0 +1,41 @@
++- scm:
++    name: project-scm
++    scm:
++      - hg:
++         url: http://hg.example.org/project
++         clean: true
++
++- job-template:
++    name: '{name}-unit-tests'
++    project-type: pipeline
++    pipeline-scm:
++      scm:
++        - project-scm
++    sandbox: true
++    publishers:
++    - email:
++        recipients: '{mail-to}'
++
++- job-template:
++    name: '{name}-perf-tests'
++    project-type: pipeline
++    pipeline-scm:
++      scm:
++        - project-scm
++    sandbox: false
++    publishers:
++    - email:
++        recipients: '{mail-to}'
++
++- job-group:
++    name: '{name}-tests'
++    jobs:
++      - '{name}-unit-tests':
++          mail-to: dev@example.org
++      - '{name}-perf-tests':
++          mail-to: qa@example.org
++
++- project:
++    name: project-name
++    jobs:
++    - '{name}-tests'
+diff --git a/tox.ini b/tox.ini
+index d8bcba3..f29c995 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -50,6 +50,6 @@ commands = {posargs}
+ [flake8]
+ # These are ignored intentionally in openstack-infra projects; please
+ # don't submit patches that solely correct them or enable them.
+-ignore = E125,H
++ignore = E125,E128,H
+ show-source = True
+ exclude = .virtualenv,.venv,.tox,dist,doc,build,*.egg,.test
