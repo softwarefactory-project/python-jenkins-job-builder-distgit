@@ -5,15 +5,16 @@
 %endif
 
 %define srcname jenkins-job-builder
+%define srcversion 2.0.0.0b1
 
 Name:           python-%{srcname}
-Version:        2.0.0.0b1
+Version:        2.0.0.0
 Release:        1%{dist}
 Summary:        Manage Jenkins jobs with YAML
 License:        ASL 2.0
 URL:            http://ci.openstack.org/jenkins-job-builder/
-Source0:        https://github.com/openstack-infra/jenkins-job-builder/archive/2.0.0.0b1.tar.gz
-Source1:	001-mqtt_notification_plugin.patch
+Source0:        https://github.com/openstack-infra/jenkins-job-builder/archive/%{srcversion}.tar.gz
+Source1:        001-mqtt_notification_plugin.patch
 BuildArch:      noarch
 
 %description
@@ -25,7 +26,7 @@ similarly configured jobs is easy.
 
 %package -n python2-%{srcname}
 Summary:        Manage Jenkins jobs with YAML
-BuildRequires:	git
+BuildRequires:  git
 BuildRequires:  python2-devel
 BuildRequires:  python-setuptools
 BuildRequires:  pytest
@@ -40,7 +41,7 @@ BuildRequires:  python-fixtures
 Requires:       python-jenkins
 Requires:       python-yaml
 Requires:       python-pbr
-BuildRequires:	python2-stevedore >= 1.8.0
+BuildRequires:  python2-stevedore >= 1.8.0
 Requires:       python-six >= 1.5.2
 %{?python_provide:%python_provide python2-%{srcname}}
 
@@ -55,7 +56,7 @@ similarly configured jobs is easy.
 %package -n python3-%{srcname}
 Summary:        Manage Jenkins jobs with YAML
 BuildRequires:  python3-devel
-BuildRequires:	git
+BuildRequires:  git
 BuildRequires:  python3-setuptools
 BuildRequires:  python3-pytest
 BuildRequires:  python3-six >= 1.5.2
@@ -82,7 +83,7 @@ similarly configured jobs is easy.
 %endif # with_python3
 
 %prep
-%autosetup -n %{srcname}-%{version} -p1
+%autosetup -n %{srcname}-%{srcversion} -p1
 patch -p1 < %{SOURCE1}
 
 # remove shebangs
@@ -147,6 +148,9 @@ PYTHONPATH=%{buildroot}%{python2_sitelib} py.test-%{python2_version} -v tests
 %{_bindir}/jenkins-jobs
 
 %changelog
+* Fri Mar 10 2017 Tristan Cacqueray <tdecacqu@redhat.com> - 2.0.0.1-1
+- Remove beta from version number
+
 * Thu Mar 9 2017 Matthieu Huin <mhuin@redhat.com> - 2.0.0.0b1-1
 - Download from PyPI
 
